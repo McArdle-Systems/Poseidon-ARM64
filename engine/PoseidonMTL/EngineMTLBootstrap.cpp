@@ -10,9 +10,50 @@
 #include <SDL3/SDL_metal.h>
 
 #include <cstdio>
+#include <vector>
 
 namespace Poseidon
 {
+
+namespace
+{
+// Manual vertex fetch by vertex_id (no MTLVertexDescriptor) -- the simplest
+// correct setup for a single fixed vertex layout. Vertex2D's MSL layout
+// (float2 + float2 + float4, natural alignment) matches Vertex2DMTL's C++
+// layout byte-for-byte: position@0, uv@8, color@16, size 32.
+const char* kShaderSource2D = R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct Vertex2D {
+    float2 position;
+    float2 uv;
+    float4 color;
+};
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+    float4 color;
+};
+
+vertex VSOut vs2d(uint vid [[vertex_id]], const device Vertex2D* verts [[buffer(0)]])
+{
+    Vertex2D v = verts[vid];
+    VSOut out;
+    out.position = float4(v.position, 0.0, 1.0);
+    out.uv = v.uv;
+    out.color = v.color;
+    return out;
+}
+
+fragment float4 fs2d(VSOut in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler samp [[sampler(0)]])
+{
+    float4 texColor = tex.sample(samp, in.uv);
+    return texColor * in.color;
+}
+)";
+} // namespace
 
 struct EngineMTLBootstrap::Impl
 {
@@ -20,6 +61,20 @@ struct EngineMTLBootstrap::Impl
     CA::MetalLayer* layer = nullptr;
     MTL::Device* device = nullptr;
     MTL::CommandQueue* commandQueue = nullptr;
+
+    MTL::RenderPipelineState* pipelineState = nullptr;
+    MTL::SamplerState* samplerState = nullptr;
+    MTL::Texture* fallbackWhite = nullptr;
+    std::vector<MTL::Texture*> textures; // handle = index + 1; 0 reserved for "none"
+
+    // Open between BeginFrame/EndFrame.
+    NS::AutoreleasePool* framePool = nullptr;
+    CA::MetalDrawable* currentDrawable = nullptr;
+    MTL::CommandBuffer* currentCommandBuffer = nullptr;
+    MTL::RenderCommandEncoder* currentEncoder = nullptr;
+
+    int drawableWidth = 0;
+    int drawableHeight = 0;
 };
 
 EngineMTLBootstrap::EngineMTLBootstrap() : _impl(new Impl()) {}
@@ -85,6 +140,8 @@ bool EngineMTLBootstrap::SetupDevice()
     int pxWidth = 0, pxHeight = 0;
     SDL_GetWindowSizeInPixels(_window, &pxWidth, &pxHeight);
     _impl->layer->setDrawableSize(CGSizeMake(static_cast<CGFloat>(pxWidth), static_cast<CGFloat>(pxHeight)));
+    _impl->drawableWidth = pxWidth;
+    _impl->drawableHeight = pxHeight;
 
     _impl->commandQueue = _impl->device->newCommandQueue();
     if (_impl->commandQueue == nullptr)
@@ -132,6 +189,8 @@ void EngineMTLBootstrap::OnWindowResized(int width, int height)
 {
     if (_impl->layer == nullptr)
         return;
+    _impl->drawableWidth = width;
+    _impl->drawableHeight = height;
     _impl->layer->setDrawableSize(CGSizeMake(static_cast<CGFloat>(width), static_cast<CGFloat>(height)));
 }
 
@@ -142,8 +201,239 @@ std::string EngineMTLBootstrap::GetRendererName() const
     return _impl->device->name()->utf8String();
 }
 
+void EngineMTLBootstrap::EnsurePipeline()
+{
+    if (_impl->pipelineState != nullptr || _impl->device == nullptr)
+        return;
+
+    NS::Error* error = nullptr;
+    NS::String* src = NS::String::string(kShaderSource2D, NS::StringEncoding::UTF8StringEncoding);
+    MTL::Library* library = _impl->device->newLibrary(src, nullptr, &error);
+    if (library == nullptr)
+    {
+        std::fprintf(stderr, "EngineMTLBootstrap: shader compile failed: %s\n",
+                     error ? error->localizedDescription()->utf8String() : "(unknown)");
+        return;
+    }
+
+    MTL::Function* vsFn = library->newFunction(NS::String::string("vs2d", NS::StringEncoding::UTF8StringEncoding));
+    MTL::Function* fsFn = library->newFunction(NS::String::string("fs2d", NS::StringEncoding::UTF8StringEncoding));
+
+    MTL::RenderPipelineDescriptor* desc = MTL::RenderPipelineDescriptor::alloc()->init();
+    desc->setVertexFunction(vsFn);
+    desc->setFragmentFunction(fsFn);
+    MTL::RenderPipelineColorAttachmentDescriptor* colorDesc = desc->colorAttachments()->object(0);
+    colorDesc->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    colorDesc->setBlendingEnabled(true);
+    colorDesc->setRgbBlendOperation(MTL::BlendOperationAdd);
+    colorDesc->setAlphaBlendOperation(MTL::BlendOperationAdd);
+    colorDesc->setSourceRGBBlendFactor(MTL::BlendFactorSourceAlpha);
+    colorDesc->setSourceAlphaBlendFactor(MTL::BlendFactorSourceAlpha);
+    colorDesc->setDestinationRGBBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
+    colorDesc->setDestinationAlphaBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
+
+    _impl->pipelineState = _impl->device->newRenderPipelineState(desc, &error);
+    if (_impl->pipelineState == nullptr)
+    {
+        std::fprintf(stderr, "EngineMTLBootstrap: pipeline state creation failed: %s\n",
+                     error ? error->localizedDescription()->utf8String() : "(unknown)");
+    }
+
+    desc->release();
+    vsFn->release();
+    fsFn->release();
+    library->release();
+
+    MTL::SamplerDescriptor* sampDesc = MTL::SamplerDescriptor::alloc()->init();
+    sampDesc->setMinFilter(MTL::SamplerMinMagFilterLinear);
+    sampDesc->setMagFilter(MTL::SamplerMinMagFilterLinear);
+    sampDesc->setSAddressMode(MTL::SamplerAddressModeClampToEdge);
+    sampDesc->setTAddressMode(MTL::SamplerAddressModeClampToEdge);
+    _impl->samplerState = _impl->device->newSamplerState(sampDesc);
+    sampDesc->release();
+}
+
+void EngineMTLBootstrap::EnsureFallbackResources()
+{
+    if (_impl->fallbackWhite != nullptr || _impl->device == nullptr)
+        return;
+
+    MTL::TextureDescriptor* desc = MTL::TextureDescriptor::texture2DDescriptor(MTL::PixelFormatRGBA8Unorm, 1, 1, false);
+    desc->setUsage(MTL::TextureUsageShaderRead);
+    desc->setStorageMode(MTL::StorageModeShared);
+    _impl->fallbackWhite = _impl->device->newTexture(desc);
+    desc->release();
+
+    const uint8_t whitePixel[4] = {255, 255, 255, 255};
+    _impl->fallbackWhite->replaceRegion(MTL::Region::Make2D(0, 0, 1, 1), 0, whitePixel, 4);
+}
+
+bool EngineMTLBootstrap::BeginFrame(float r, float g, float b, float a, bool clear)
+{
+    if (_impl->layer == nullptr || _impl->commandQueue == nullptr)
+        return false;
+
+    EnsurePipeline();
+    EnsureFallbackResources();
+    if (_impl->pipelineState == nullptr)
+        return false;
+
+    _impl->framePool = NS::AutoreleasePool::alloc()->init();
+
+    _impl->currentDrawable = _impl->layer->nextDrawable();
+    if (_impl->currentDrawable == nullptr)
+    {
+        _impl->framePool->release();
+        _impl->framePool = nullptr;
+        return false;
+    }
+
+    MTL::RenderPassDescriptor* passDesc = MTL::RenderPassDescriptor::alloc()->init();
+    MTL::RenderPassColorAttachmentDescriptor* colorAttachment = passDesc->colorAttachments()->object(0);
+    colorAttachment->setTexture(_impl->currentDrawable->texture());
+    colorAttachment->setLoadAction(clear ? MTL::LoadActionClear : MTL::LoadActionLoad);
+    colorAttachment->setStoreAction(MTL::StoreActionStore);
+    colorAttachment->setClearColor(MTL::ClearColor::Make(r, g, b, a));
+
+    _impl->currentCommandBuffer = _impl->commandQueue->commandBuffer();
+    _impl->currentEncoder = _impl->currentCommandBuffer->renderCommandEncoder(passDesc);
+    _impl->currentEncoder->setRenderPipelineState(_impl->pipelineState);
+    _impl->currentEncoder->setFragmentSamplerState(_impl->samplerState, 0);
+
+    passDesc->release();
+    return true;
+}
+
+void EngineMTLBootstrap::DrawTriangles2D(const Vertex2DMTL* verts, int vertCount, const uint16_t* indices,
+                                         int indexCount, int textureHandle, int clipX, int clipY, int clipW,
+                                         int clipH)
+{
+    if (_impl->currentEncoder == nullptr || vertCount <= 0 || indexCount <= 0)
+        return;
+
+    // Clamp to the drawable -- Metal's setScissorRect raises a validation
+    // error if the rect extends past the render target.
+    int x0 = clipX < 0 ? 0 : clipX;
+    int y0 = clipY < 0 ? 0 : clipY;
+    int x1 = clipX + clipW;
+    int y1 = clipY + clipH;
+    if (x1 > _impl->drawableWidth)
+        x1 = _impl->drawableWidth;
+    if (y1 > _impl->drawableHeight)
+        y1 = _impl->drawableHeight;
+    if (x1 <= x0 || y1 <= y0)
+        return; // fully clipped
+
+    MTL::ScissorRect scissor;
+    scissor.x = static_cast<NS::UInteger>(x0);
+    scissor.y = static_cast<NS::UInteger>(y0);
+    scissor.width = static_cast<NS::UInteger>(x1 - x0);
+    scissor.height = static_cast<NS::UInteger>(y1 - y0);
+    _impl->currentEncoder->setScissorRect(scissor);
+
+    MTL::Buffer* vbuf = _impl->device->newBuffer(verts, static_cast<NS::UInteger>(vertCount) * sizeof(Vertex2DMTL),
+                                                 MTL::ResourceStorageModeShared);
+    MTL::Buffer* ibuf = _impl->device->newBuffer(indices, static_cast<NS::UInteger>(indexCount) * sizeof(uint16_t),
+                                                 MTL::ResourceStorageModeShared);
+
+    MTL::Texture* tex = _impl->fallbackWhite;
+    if (textureHandle > 0 && static_cast<size_t>(textureHandle) <= _impl->textures.size())
+    {
+        MTL::Texture* found = _impl->textures[textureHandle - 1];
+        if (found != nullptr)
+            tex = found;
+    }
+
+    _impl->currentEncoder->setVertexBuffer(vbuf, 0, 0);
+    _impl->currentEncoder->setFragmentTexture(tex, 0);
+    _impl->currentEncoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, static_cast<NS::UInteger>(indexCount),
+                                                 MTL::IndexTypeUInt16, ibuf, 0);
+
+    vbuf->release();
+    ibuf->release();
+}
+
+void EngineMTLBootstrap::EndFrame()
+{
+    if (_impl->currentEncoder == nullptr)
+        return;
+
+    _impl->currentEncoder->endEncoding();
+    _impl->currentCommandBuffer->presentDrawable(_impl->currentDrawable);
+    _impl->currentCommandBuffer->commit();
+
+    _impl->currentEncoder = nullptr;
+    _impl->currentCommandBuffer = nullptr;
+    _impl->currentDrawable = nullptr;
+
+    if (_impl->framePool != nullptr)
+    {
+        _impl->framePool->release();
+        _impl->framePool = nullptr;
+    }
+}
+
+int EngineMTLBootstrap::CreateTexture(int width, int height, const uint8_t* rgba)
+{
+    if (_impl->device == nullptr || width <= 0 || height <= 0 || rgba == nullptr)
+        return 0;
+
+    MTL::TextureDescriptor* desc =
+        MTL::TextureDescriptor::texture2DDescriptor(MTL::PixelFormatRGBA8Unorm, static_cast<NS::UInteger>(width),
+                                                    static_cast<NS::UInteger>(height), false);
+    desc->setUsage(MTL::TextureUsageShaderRead);
+    desc->setStorageMode(MTL::StorageModeShared);
+
+    MTL::Texture* tex = _impl->device->newTexture(desc);
+    desc->release();
+    if (tex == nullptr)
+        return 0;
+
+    MTL::Region region = MTL::Region::Make2D(0, 0, static_cast<NS::UInteger>(width), static_cast<NS::UInteger>(height));
+    tex->replaceRegion(region, 0, rgba, static_cast<NS::UInteger>(width) * 4);
+
+    _impl->textures.push_back(tex);
+    return static_cast<int>(_impl->textures.size());
+}
+
+void EngineMTLBootstrap::DestroyTexture(int handle)
+{
+    if (handle <= 0 || static_cast<size_t>(handle) > _impl->textures.size())
+        return;
+    MTL::Texture*& slot = _impl->textures[handle - 1];
+    if (slot != nullptr)
+    {
+        slot->release();
+        slot = nullptr;
+    }
+}
+
 void EngineMTLBootstrap::Shutdown()
 {
+    for (MTL::Texture*& tex : _impl->textures)
+    {
+        if (tex != nullptr)
+        {
+            tex->release();
+            tex = nullptr;
+        }
+    }
+    _impl->textures.clear();
+    if (_impl->fallbackWhite != nullptr)
+    {
+        _impl->fallbackWhite->release();
+        _impl->fallbackWhite = nullptr;
+    }
+    if (_impl->samplerState != nullptr)
+    {
+        _impl->samplerState->release();
+        _impl->samplerState = nullptr;
+    }
+    if (_impl->pipelineState != nullptr)
+    {
+        _impl->pipelineState->release();
+        _impl->pipelineState = nullptr;
+    }
     if (_impl->commandQueue != nullptr)
     {
         _impl->commandQueue->release();

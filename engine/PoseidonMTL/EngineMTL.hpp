@@ -7,20 +7,31 @@
 namespace Poseidon
 {
 
-class TextBankDummy;
+class TextBankMTL;
 
 // First real Metal Engine backend: implements the full IGraphicsEngine /
 // Engine contract so it can register with GraphicsEngineFactory and run
-// through GameApplication's normal lifecycle. Draw*/Mesh* calls are no-op
-// stubs for now (mirrors GraphicsEngineDummy) -- nothing exercises them
-// before world/landscape content loads. TextBank() returns a TextBankDummy
-// for the same reason: textures are tracked but not yet GPU-uploaded.
+// through GameApplication's normal lifecycle.
+//
+// 2D screen-space drawing (Draw2D/DrawPoly/DrawLine) and the legacy/software
+// T&L 3D mesh path (PrepareTriangle/BeginMesh/DrawSection/DrawPolygon) are
+// both real. Both end up at the same place: by the time the engine sees a
+// TLVertex, the CPU (Scene/TLVertexTable, see TransLight.cpp) has already
+// done the full model->view->projection->perspective-divide transform --
+// positions are already screen-space pixels. That means the 3D path needs no
+// matrix math on the GPU side either; it reuses the exact same DrawFan2D
+// helper as the 2D path, just sourcing vertices from the bound TLVertexTable
+// instead of Vertex2DAbs/Draw2DPars. No lighting/shadows yet (flat per-vertex
+// color from the CPU-side TLVertex.color) -- good enough to render sky/cloud/
+// sun/moon and simple geometry without crashing; the hardware-TL path
+// (PrepareMeshTL/BeginMeshTL/DrawSectionTL, used for terrain/vehicles) is a
+// separate, not-yet-implemented milestone.
 //
 // All actual Metal calls go through EngineMTLBootstrap (AttachToWindow /
-// RenderClearAndPresent / etc.) rather than metal-cpp types directly --
-// metal-cpp's Foundation headers can't be included in the same translation
-// unit as Poseidon's core headers (see EngineMTLBootstrap.hpp for why), and
-// this file needs Engine.hpp.
+// BeginFrame / DrawTriangles2D / etc.) rather than metal-cpp types directly
+// -- metal-cpp's Foundation headers can't be included in the same
+// translation unit as Poseidon's core headers (see EngineMTLBootstrap.hpp
+// for why), and this file needs Engine.hpp.
 class EngineMTL : public Engine
 {
   public:
@@ -28,6 +39,7 @@ class EngineMTL : public Engine
     ~EngineMTL() override;
 
     void Clear(bool clearZ = true, bool clear = true, PackedColor color = PackedColor(0)) override;
+    void NextFrame() override;
     void Pause() override {}
     void Restore() override {}
     void FogColorChanged(ColorVal /*fogColor*/) override {}
@@ -50,35 +62,28 @@ class EngineMTL : public Engine
     void SetGamma(float g) override { _gamma = g; }
     float GetGamma() const override { return _gamma; }
 
-    void PrepareTriangle(const MipInfo& /*mip*/, int /*specFlags*/) override {}
-    void DrawPolygon(const VertexIndex* /*i*/, int /*n*/) override {}
-    void DrawSection(const FaceArray& /*face*/, Offset /*beg*/, Offset /*end*/) override {}
+    void PrepareTriangle(const MipInfo& mip, int specFlags) override;
+    void DrawPolygon(const VertexIndex* i, int n) override;
+    void DrawSection(const FaceArray& face, Offset beg, Offset end) override;
     void DrawDecal(Vector3Par /*pos*/, float /*rhw*/, float /*sizeX*/, float /*sizeY*/, PackedColor /*col*/,
                    const MipInfo& /*mip*/, int /*specFlags*/) override
     {
+        // Not hit by the sky/cloud/sun/moon path this milestone targets; add
+        // when something on the critical path needs it.
     }
 
-    void Draw2D(const Draw2DPars& /*pars*/, const Rect2DAbs& /*rect*/,
-                const Rect2DAbs& /*clip*/ = Rect2DClipAbs) override
-    {
-    }
-    void DrawPoly(const MipInfo& /*mip*/, const Vertex2DAbs* /*vertices*/, int /*nVertices*/,
-                  const Rect2DAbs& /*clip*/ = Rect2DClipAbs, int /*specFlags*/ = DefSpecFlags2D) override
-    {
-    }
-    void DrawPoly(const MipInfo& /*mip*/, const Vertex2DPixel* /*vertices*/, int /*nVertices*/,
-                  const Rect2DPixel& /*clip*/ = Rect2DClipPixel, int /*specFlags*/ = DefSpecFlags2D) override
-    {
-    }
-    void DrawLine(const Line2DAbs& /*rect*/, PackedColor /*c0*/, PackedColor /*c1*/,
-                  const Rect2DAbs& /*clip*/ = Rect2DClipAbs) override
-    {
-    }
-    void DrawLine(int /*beg*/, int /*end*/) override {}
+    void Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect2DAbs& clip = Rect2DClipAbs) override;
+    void DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int nVertices,
+                  const Rect2DAbs& clip = Rect2DClipAbs, int specFlags = DefSpecFlags2D) override;
+    void DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int nVertices,
+                  const Rect2DPixel& clip = Rect2DClipPixel, int specFlags = DefSpecFlags2D) override;
+    void DrawLine(const Line2DAbs& rect, PackedColor c0, PackedColor c1,
+                  const Rect2DAbs& clip = Rect2DClipAbs) override;
+    void DrawLine(int beg, int end) override; // 3D line, reads from the bound TLVertexTable
 
     void PrepareMesh(const render::LegacySpec& /*spec*/) override {}
-    void BeginMesh(TLVertexTable& /*mesh*/, const render::LegacySpec& /*spec*/) override {}
-    void EndMesh(TLVertexTable& /*mesh*/) override {}
+    void BeginMesh(TLVertexTable& mesh, const render::LegacySpec& /*spec*/) override { _mesh = &mesh; }
+    void EndMesh(TLVertexTable& /*mesh*/) override { _mesh = nullptr; }
 
     AbstractTextBank* TextBank() override;
     void TextureDestroyed(Texture* /*tex*/) override {}
@@ -120,9 +125,33 @@ class EngineMTL : public Engine
     SDLEventWindow _eventWindow;
     EngineMTLBootstrap _bootstrap;
 
-    TextBankDummy* _textBank = nullptr;
+    TextBankMTL* _textBank = nullptr;
+
+    // 3D mesh path: the TLVertexTable bound by BeginMesh (cleared by EndMesh)
+    // and the texture handle PrepareTriangle most recently set, used by
+    // DrawPolygon/DrawSection to resolve each fan's vertices/texture.
+    TLVertexTable* _mesh = nullptr;
+    int _currentTriTexture = 0;
 
     void CreateWindowAndDevice();
+
+    // Pixel space (origin top-left, Y down) -> Metal NDC (-1..1, Y up).
+    void PixelToNDC(float px, float py, float& ndcX, float& ndcY) const;
+
+    // Converts up to kMaxPolyVerts already-pixel-space/colored/UV'd vertices
+    // into a triangle fan and issues one DrawTriangles2D call. Shared by
+    // Draw2D (always a 4-vertex quad) and both DrawPoly overloads.
+    enum
+    {
+        kMaxPolyVerts = 32
+    };
+    void DrawFan2D(const float* xy, const float* uv, const PackedColor* colors, int n, int textureHandle,
+                   const Rect2DAbs& clip);
+
+    // Reads up to kMaxPolyVerts vertices from the bound _mesh by index and
+    // draws them as a fan via DrawFan2D (unclipped -- full backbuffer rect).
+    // Shared by DrawPolygon and DrawSection (one call per Poly).
+    void DrawIndexedFan3D(const VertexIndex* indices, int n);
 };
 
 } // namespace Poseidon

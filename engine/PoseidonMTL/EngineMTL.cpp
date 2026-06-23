@@ -5,11 +5,26 @@
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Core/Config/EngineConfig.hpp>
 #include <Poseidon/Graphics/Shared/WindowPlacement.hpp>
-#include <Poseidon/Graphics/Dummy/TextBankDummy.hpp>
+#include <Poseidon/Graphics/Core/TLVertex.hpp>
+#include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
+#include <PoseidonMTL/TextBankMTL.hpp>
+#include <PoseidonMTL/TextureMTL.hpp>
 #include <Poseidon/Foundation/Logging/Logging.hpp>
+
+#include <cmath>
+#include <cstdint>
 
 namespace Poseidon
 {
+
+namespace
+{
+int GpuHandleOf(Texture* tex)
+{
+    TextureMTL* mtlTex = dynamic_cast<TextureMTL*>(tex);
+    return mtlTex ? mtlTex->GpuHandle() : 0;
+}
+} // namespace
 
 EngineMTL::EngineMTL(int width, int height, bool windowed, int bpp)
 {
@@ -26,7 +41,7 @@ EngineMTL::EngineMTL(int width, int height, bool windowed, int bpp)
 
     CreateWindowAndDevice();
 
-    _textBank = new TextBankDummy();
+    _textBank = new TextBankMTL(&_bootstrap);
 }
 
 void EngineMTL::CreateWindowAndDevice()
@@ -133,13 +148,208 @@ EngineMTL::~EngineMTL()
 
 void EngineMTL::Clear(bool /*clearZ*/, bool clear, PackedColor color)
 {
-    // Piece 1 has no draw calls between Clear() and NextFrame() yet, so
-    // clearing and presenting in one shot is equivalent to the "proper"
-    // split (begin pass here, end+present in NextFrame) and avoids holding
-    // an encoder open across member state for nothing. Revisit once real
-    // draws land (Piece 2).
-    _bootstrap.RenderClearAndPresent(color.R8() / 255.0f, color.G8() / 255.0f, color.B8() / 255.0f,
-                                     color.A8() / 255.0f, clear);
+    _bootstrap.BeginFrame(color.R8() / 255.0f, color.G8() / 255.0f, color.B8() / 255.0f, color.A8() / 255.0f, clear);
+}
+
+void EngineMTL::NextFrame()
+{
+    _bootstrap.EndFrame();
+    Engine::NextFrame();
+}
+
+void EngineMTL::PixelToNDC(float px, float py, float& ndcX, float& ndcY) const
+{
+    ndcX = _w > 0 ? (px / static_cast<float>(_w)) * 2.0f - 1.0f : 0.0f;
+    // Pixel Y grows downward (origin top-left); NDC Y grows upward.
+    ndcY = _h > 0 ? 1.0f - (py / static_cast<float>(_h)) * 2.0f : 0.0f;
+}
+
+void EngineMTL::DrawFan2D(const float* xy, const float* uv, const PackedColor* colors, int n, int textureHandle,
+                          const Rect2DAbs& clip)
+{
+    if (n < 3 || n > kMaxPolyVerts)
+        return;
+
+    Vertex2DMTL verts[kMaxPolyVerts];
+    for (int i = 0; i < n; i++)
+    {
+        PixelToNDC(xy[i * 2], xy[i * 2 + 1], verts[i].x, verts[i].y);
+        verts[i].u = uv[i * 2];
+        verts[i].v = uv[i * 2 + 1];
+        verts[i].r = colors[i].R8() / 255.0f;
+        verts[i].g = colors[i].G8() / 255.0f;
+        verts[i].b = colors[i].B8() / 255.0f;
+        verts[i].a = colors[i].A8() / 255.0f;
+    }
+
+    uint16_t indices[(kMaxPolyVerts - 2) * 3];
+    int idxCount = 0;
+    for (int i = 1; i < n - 1; i++)
+    {
+        indices[idxCount++] = 0;
+        indices[idxCount++] = static_cast<uint16_t>(i);
+        indices[idxCount++] = static_cast<uint16_t>(i + 1);
+    }
+
+    _bootstrap.DrawTriangles2D(verts, n, indices, idxCount, textureHandle, static_cast<int>(clip.x),
+                               static_cast<int>(clip.y), static_cast<int>(clip.w), static_cast<int>(clip.h));
+}
+
+void EngineMTL::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect2DAbs& clip)
+{
+    if (!pars.mip.IsOK())
+        return;
+
+    const float xy[8] = {
+        rect.x,          rect.y,          rect.x + rect.w, rect.y,
+        rect.x + rect.w, rect.y + rect.h, rect.x,          rect.y + rect.h,
+    };
+    const float uv[8] = {
+        pars.uTL, pars.vTL, pars.uTR, pars.vTR, pars.uBR, pars.vBR, pars.uBL, pars.vBL,
+    };
+    const PackedColor colors[4] = {pars.colorTL, pars.colorTR, pars.colorBR, pars.colorBL};
+
+    DrawFan2D(xy, uv, colors, 4, GpuHandleOf(pars.mip._texture), clip);
+}
+
+void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& clip,
+                         int /*specFlags*/)
+{
+    if (n < 3 || n > kMaxPolyVerts)
+        return;
+
+    float xy[kMaxPolyVerts * 2];
+    float uv[kMaxPolyVerts * 2];
+    PackedColor colors[kMaxPolyVerts];
+    for (int i = 0; i < n; i++)
+    {
+        xy[i * 2] = vertices[i].x;
+        xy[i * 2 + 1] = vertices[i].y;
+        uv[i * 2] = vertices[i].u;
+        uv[i * 2 + 1] = vertices[i].v;
+        colors[i] = vertices[i].color;
+    }
+
+    DrawFan2D(xy, uv, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, clip);
+}
+
+void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& clip,
+                         int /*specFlags*/)
+{
+    if (n < 3 || n > kMaxPolyVerts)
+        return;
+
+    const float x2d = Left2D();
+    const float y2d = Top2D();
+
+    float xy[kMaxPolyVerts * 2];
+    float uv[kMaxPolyVerts * 2];
+    PackedColor colors[kMaxPolyVerts];
+    for (int i = 0; i < n; i++)
+    {
+        xy[i * 2] = vertices[i].x + x2d;
+        xy[i * 2 + 1] = vertices[i].y + y2d;
+        uv[i * 2] = vertices[i].u;
+        uv[i * 2 + 1] = vertices[i].v;
+        colors[i] = vertices[i].color;
+    }
+
+    Rect2DAbs clipAbs;
+    Convert(clipAbs, clip);
+    DrawFan2D(xy, uv, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, clipAbs);
+}
+
+void EngineMTL::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, const Rect2DAbs& clip)
+{
+    // Solid colored quad approximating the line -- GL33 samples a dedicated
+    // soft-edged line texture (EngineGL33_2D.cpp:112) for antialiasing; this
+    // is a deliberately simpler stand-in (untextured, fallback-white quad).
+    const float x0 = line.beg.x, y0 = line.beg.y;
+    const float x1 = line.end.x, y1 = line.end.y;
+    const float dx = x1 - x0, dy = y1 - y0;
+    const float lenSq = dx * dx + dy * dy;
+    const float invLen = lenSq > 0 ? 1.0f / std::sqrt(lenSq) : 1.0f;
+    const float pdx = dy * invLen, pdy = -dx * invLen;
+    const float halfW = 1.5f; // ~3px wide
+
+    const float xy[8] = {
+        x0 - pdx * halfW, y0 - pdy * halfW, x1 - pdx * halfW, y1 - pdy * halfW,
+        x1 + pdx * halfW, y1 + pdy * halfW, x0 + pdx * halfW, y0 + pdy * halfW,
+    };
+    const float uv[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    const PackedColor colors[4] = {c0, c0, c1, c1};
+
+    DrawFan2D(xy, uv, colors, 4, 0, clip);
+}
+
+void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
+{
+    if (_mesh == nullptr || n < 3 || n > kMaxPolyVerts)
+        return;
+
+    float xy[kMaxPolyVerts * 2];
+    float uv[kMaxPolyVerts * 2];
+    PackedColor colors[kMaxPolyVerts];
+    for (int k = 0; k < n; k++)
+    {
+        const TLVertex& v = _mesh->GetVertex(indices[k]);
+        xy[k * 2] = v.pos.X();
+        xy[k * 2 + 1] = v.pos.Y();
+        uv[k * 2] = v.t0.u;
+        uv[k * 2 + 1] = v.t0.v;
+        colors[k] = v.color;
+    }
+
+    const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
+    DrawFan2D(xy, uv, colors, n, _currentTriTexture, fullScreen);
+}
+
+void EngineMTL::PrepareTriangle(const MipInfo& mip, int /*specFlags*/)
+{
+    _currentTriTexture = mip.IsOK() ? GpuHandleOf(mip._texture) : 0;
+}
+
+void EngineMTL::DrawPolygon(const VertexIndex* i, int n)
+{
+    DrawIndexedFan3D(i, n);
+}
+
+void EngineMTL::DrawSection(const FaceArray& face, Offset beg, Offset end)
+{
+    for (Offset i = beg; i < end; face.Next(i))
+    {
+        const Poly& f = face[i];
+        DrawIndexedFan3D(f.GetVertexList(), f.N());
+    }
+}
+
+void EngineMTL::DrawLine(int beg, int end)
+{
+    if (_mesh == nullptr)
+        return;
+
+    // Thin quad approximating the line, same approach as the 2D DrawLine
+    // overload (and GL33's DrawLine(int,int), EngineGL33_2D.cpp:392).
+    const TLVertex& v0 = _mesh->GetVertex(beg);
+    const TLVertex& v1 = _mesh->GetVertex(end);
+
+    const float x0 = v0.pos.X(), y0 = v0.pos.Y();
+    const float x1 = v1.pos.X(), y1 = v1.pos.Y();
+    const float dx = x1 - x0, dy = y1 - y0;
+    const float lenSq = dx * dx + dy * dy;
+    const float invLen = lenSq > 0 ? 1.0f / std::sqrt(lenSq) : 1.0f;
+    const float pdx = dy * invLen, pdy = -dx * invLen;
+    const float halfW = 1.5f;
+
+    const float xy[8] = {
+        x0 - pdx * halfW, y0 - pdy * halfW, x1 - pdx * halfW, y1 - pdy * halfW,
+        x1 + pdx * halfW, y1 + pdy * halfW, x0 + pdx * halfW, y0 + pdy * halfW,
+    };
+    const float uv[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    const PackedColor colors[4] = {v0.color, v0.color, v1.color, v1.color};
+
+    const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
+    DrawFan2D(xy, uv, colors, 4, 0, fullScreen);
 }
 
 bool EngineMTL::SwitchRes(int w, int h, int bpp)

@@ -1,11 +1,22 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 struct SDL_Window;
 
 namespace Poseidon
 {
+
+// Vertex for 2D quad/poly rendering. Position is already in NDC (-1..1);
+// EngineMTL converts from pixel space before calling DrawTriangles2D. Color
+// is straight (non-premultiplied) alpha, 0..1.
+struct Vertex2DMTL
+{
+    float x, y;
+    float u, v;
+    float r, g, b, a;
+};
 
 // Native Metal device/layer/queue wrapper (macOS / Apple Silicon). Used two
 // ways:
@@ -58,8 +69,37 @@ class EngineMTLBootstrap
     // Metal device name (e.g. "Apple M2 Pro"), empty if not yet initialized.
     std::string GetRendererName() const;
 
+    // --- Real 2D rendering (Piece 2) ---
+
+    // Acquires the next drawable, clears (or loads) it, and opens a render
+    // command encoder that DrawTriangles2D records into. Must be paired with
+    // EndFrame(). Returns false if no drawable was available (caller should
+    // skip the frame -- no DrawTriangles2D/EndFrame calls in that case).
+    bool BeginFrame(float r, float g, float b, float a, bool clear);
+
+    // Uploads `vertCount` vertices + `indexCount` uint16 indices and issues
+    // one indexed-triangle draw call sampling `textureHandle` (0 = an opaque
+    // white 1x1 fallback, so untextured colored quads/lines still work).
+    // `clipX/Y/W/H` (pixels, already clamped to the drawable) set the hardware
+    // scissor rect for this draw -- simpler than GL33's manual per-vertex UV
+    // clip-rect remapping, since Metal does the pixel-discard for free.
+    // Must be called between BeginFrame/EndFrame.
+    void DrawTriangles2D(const Vertex2DMTL* verts, int vertCount, const uint16_t* indices, int indexCount,
+                         int textureHandle, int clipX, int clipY, int clipW, int clipH);
+
+    // Ends encoding, presents the drawable, commits the command buffer.
+    void EndFrame();
+
+    // Decodes-then-uploads an RGBA8888 image as a new 2D texture (no
+    // mipmaps -- menu/UI textures render close to 1:1). Returns a handle
+    // (>0) usable with DrawTriangles2D, or 0 on failure.
+    int CreateTexture(int width, int height, const uint8_t* rgba);
+    void DestroyTexture(int handle);
+
   private:
     bool SetupDevice(); // shared by Init() and AttachToWindow()
+    void EnsurePipeline();         // lazy: compiles the embedded MSL shader + pipeline state
+    void EnsureFallbackResources(); // lazy: 1x1 opaque white texture + sampler
 
     struct Impl;
     Impl* _impl = nullptr;

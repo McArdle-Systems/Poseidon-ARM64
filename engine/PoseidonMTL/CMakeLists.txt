@@ -5,6 +5,10 @@ add_library(PoseidonMTL STATIC
     EngineMTL.cpp
     EngineMTL.hpp
     GraphicsBackendMTL.cpp
+    TextureMTL.cpp
+    TextureMTL.hpp
+    TextBankMTL.cpp
+    TextBankMTL.hpp
 )
 
 target_link_libraries(PoseidonMTL PUBLIC Poseidon)
