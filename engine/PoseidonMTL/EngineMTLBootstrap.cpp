@@ -201,6 +201,11 @@ std::string EngineMTLBootstrap::GetRendererName() const
     return _impl->device->name()->utf8String();
 }
 
+bool EngineMTLBootstrap::IsPipelineReady() const
+{
+    return _impl->pipelineState != nullptr;
+}
+
 void EngineMTLBootstrap::EnsurePipeline()
 {
     if (_impl->pipelineState != nullptr || _impl->device == nullptr)

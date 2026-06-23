@@ -69,6 +69,14 @@ class EngineMTLBootstrap
     // Metal device name (e.g. "Apple M2 Pro"), empty if not yet initialized.
     std::string GetRendererName() const;
 
+    // True once EnsurePipeline() has successfully built the render pipeline
+    // state (lazily, on first BeginFrame). False before that, or if shader
+    // compile / pipeline creation failed -- check this via the engine's own
+    // logging (LOG_*) rather than relying on this class's stderr-only error
+    // output, which a host process redirecting/capturing stderr could
+    // silently swallow.
+    bool IsPipelineReady() const;
+
     // --- Real 2D rendering (Piece 2) ---
 
     // Acquires the next drawable, clears (or loads) it, and opens a render

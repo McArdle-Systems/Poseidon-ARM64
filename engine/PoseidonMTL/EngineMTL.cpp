@@ -148,7 +148,20 @@ EngineMTL::~EngineMTL()
 
 void EngineMTL::Clear(bool /*clearZ*/, bool clear, PackedColor color)
 {
-    _bootstrap.BeginFrame(color.R8() / 255.0f, color.G8() / 255.0f, color.B8() / 255.0f, color.A8() / 255.0f, clear);
+    static bool sLoggedPipelineStatus = false;
+    if (!sLoggedPipelineStatus)
+    {
+        LOG_INFO(Graphics, "MTL: DEBUG pipeline ready = {}", _bootstrap.IsPipelineReady());
+        sLoggedPipelineStatus = true;
+    }
+    bool began = _bootstrap.BeginFrame(color.R8() / 255.0f, color.G8() / 255.0f, color.B8() / 255.0f,
+                                       color.A8() / 255.0f, clear);
+    static int sBeginFailCount = 0;
+    if (!began && sBeginFailCount < 5)
+    {
+        LOG_INFO(Graphics, "MTL: DEBUG BeginFrame FAILED #{}", sBeginFailCount);
+        sBeginFailCount++;
+    }
 }
 
 void EngineMTL::NextFrame()
@@ -208,6 +221,16 @@ void EngineMTL::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect
         pars.uTL, pars.vTL, pars.uTR, pars.vTR, pars.uBR, pars.vBR, pars.uBL, pars.vBL,
     };
     const PackedColor colors[4] = {pars.colorTL, pars.colorTR, pars.colorBR, pars.colorBL};
+
+    static int sDraw2DCount = 0;
+    if (sDraw2DCount < 40)
+    {
+        int texHandle = GpuHandleOf(pars.mip._texture);
+        LOG_INFO(Graphics, "MTL: DEBUG Draw2D #{} rect=({},{},{},{}) tex={} colorTL=({},{},{},{})", sDraw2DCount,
+                 rect.x, rect.y, rect.w, rect.h, texHandle, pars.colorTL.R8(), pars.colorTL.G8(), pars.colorTL.B8(),
+                 pars.colorTL.A8());
+    }
+    sDraw2DCount++;
 
     DrawFan2D(xy, uv, colors, 4, GpuHandleOf(pars.mip._texture), clip);
 }

@@ -5,9 +5,20 @@ can pick this up without re-deriving context.
 
 ## Where things stand
 
-**The game boots, loads real retail game data, and runs its per-frame render
-loop continuously without crashing, on native Metal, on Apple Silicon.**
-Confirmed end to end:
+**The main menu renders and is interactive, on native Metal, on Apple
+Silicon, against real retail game data.** Confirmed by hand: launched the
+game, the menu appeared, clicked a button, a settings (sub-)menu opened.
+This is the milestone the whole session was aimed at.
+
+Earlier in this session the window appeared solid black; debug
+instrumentation (left in place per request -- see `DEBUG` log lines in
+`EngineMTL::Clear`/`Draw2D`) proved real draw calls with real textures/colors
+were reaching the GPU even then. The black screen turned out to not be the
+final state -- once actually interacted with, the real menu was there
+underneath/after. Root cause of the initial black appearance wasn't
+conclusively isolated (candidates: a loading-screen fade, or the visible
+content simply needing a frame/input nudge) -- worth a closer look next
+session, but no longer blocking.
 
 ```
 config → Metal device init (Apple M-series) → display/graphics config
@@ -15,11 +26,28 @@ config → Metal device init (Apple M-series) → display/graphics config
   → fonts initialized → scene preloader initialized
   → enters World::Simulate / RenderFrame, runs continuously (no crash)
   → real Draw2D / DrawPoly / 3D-mesh-fan draw calls confirmed flowing
-    through the Metal pipeline with live data (verified via temporary
-    instrumentation, since removed)
-  → screen renders solid black -- open investigation, see "Where it
-    stops" below
+    through the Metal pipeline with live data (debug logging left in,
+    see EngineMTL::Clear/Draw2D)
+  → main menu renders and is interactive (confirmed by hand)
 ```
+
+## Debug logging currently left in (intentional, per request)
+
+- `EngineMTL::Clear`: logs `IsPipelineReady()` once, and the first 5
+  `BeginFrame()` failures if any.
+- `EngineMTL::Draw2D`: logs rect/texture-handle/colorTL for the first 40 calls.
+- `EngineMTLBootstrap::IsPipelineReady()`: new accessor backing the above --
+  added because this class's own error logging goes through raw
+  `fprintf(stderr, ...)` (it can't include Poseidon's `LOG_*` macros --
+  metal-cpp/Poseidon header collision, see the class comment), and a host
+  process redirecting/capturing stderr could silently swallow those
+  messages. Worth remembering if a *real* shader-compile/pipeline-creation
+  failure ever needs diagnosing: check `IsPipelineReady()` via `LOG_*` from
+  EngineMTL, don't trust the absence of an `EngineMTLBootstrap: ...` stderr
+  line as proof nothing failed.
+
+Strip all of the above once the black-screen-at-startup question is closed
+out and the menu's visual correctness (colors, text, art) is verified.
 
 ## Milestones completed
 
