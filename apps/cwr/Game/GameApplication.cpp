@@ -952,6 +952,7 @@ void GameApplication::RunMainLoop()
     const bool benchmarkMode = AppConfig::Instance().BenchmarkMode();
     const int benchmarkMaxFrames = 300; // ~10s at 30fps
     int benchmarkFrameCount = 0;
+    bool benchmarkDone = false;
     DWORD benchmarkStartTick = 0;
     DWORD benchmarkLastLogTick = 0;
     int benchmarkLastLogFrame = 0;
@@ -1052,13 +1053,16 @@ void GameApplication::RunMainLoop()
                 benchmarkLastLogTick = now;
                 benchmarkLastLogFrame = benchmarkFrameCount;
             }
-            if (benchmarkFrameCount >= benchmarkMaxFrames)
+            if (benchmarkFrameCount >= benchmarkMaxFrames && !benchmarkDone)
             {
                 DWORD elapsed = GetTickCount() - benchmarkStartTick;
                 float avgFps = benchmarkFrameCount * 1000.0f / (elapsed > 0 ? elapsed : 1);
                 LOG_INFO(Core, "BENCHMARK RESULT: {} frames in {:.1f}s = {:.1f} avg FPS", benchmarkFrameCount,
                          elapsed / 1000.0f, avgFps);
-                m_closeRequest = true;
+                // Vanilla OFP's -benchmark reports FPS and keeps running --
+                // it doesn't quit the process. Stop re-logging the same
+                // result every subsequent frame instead of forcing a close.
+                benchmarkDone = true;
             }
         }
 
@@ -1174,6 +1178,7 @@ void GameApplication::RunMainLoop()
     const bool benchmarkMode = AppConfig::Instance().BenchmarkMode();
     const int benchmarkMaxFrames = 300;
     int benchmarkFrameCount = 0;
+    bool benchmarkDone = false;
     DWORD benchmarkStartTick = 0;
     DWORD benchmarkLastLogTick = 0;
     int benchmarkLastLogFrame = 0;
@@ -1264,13 +1269,16 @@ void GameApplication::RunMainLoop()
                 benchmarkLastLogTick = now;
                 benchmarkLastLogFrame = benchmarkFrameCount;
             }
-            if (benchmarkFrameCount >= benchmarkMaxFrames)
+            if (benchmarkFrameCount >= benchmarkMaxFrames && !benchmarkDone)
             {
                 DWORD elapsed = Poseidon::Foundation::GlobalTickCount() - benchmarkStartTick;
                 float avgFps = benchmarkFrameCount * 1000.0f / (elapsed > 0 ? elapsed : 1);
                 LOG_INFO(Core, "BENCHMARK RESULT: {} frames in {:.1f}s = {:.1f} avg FPS", benchmarkFrameCount,
                          elapsed / 1000.0f, avgFps);
-                m_closeRequest = true;
+                // Vanilla OFP's -benchmark reports FPS and keeps running --
+                // it doesn't quit the process. Stop re-logging the same
+                // result every subsequent frame instead of forcing a close.
+                benchmarkDone = true;
             }
         }
 

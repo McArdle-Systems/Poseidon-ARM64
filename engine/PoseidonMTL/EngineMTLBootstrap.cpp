@@ -176,7 +176,23 @@ vertex VSOutMesh vsMesh(uint vid [[vertex_id]], const device VertexMesh* verts [
     out.uv = v.uv;
     out.color = float4(lit, obj.ambient.w);
     out.fogFactor = fogFactor;
-    out.useTexAlpha = obj.flags.x;
+    // TODO: obj.flags.x (Texture::IsAlpha(), see ObjectConstantsMTL::flags)
+    // is plumbed through but deliberately unused here. GL33 only lets
+    // texColor.a affect the final pixel for sections it draws in its
+    // dedicated back-to-front BlendOnly pass (SceneDraw.cpp:1782-1788) --
+    // opaque+cutout sections draw with blending off regardless of what's in
+    // their texture's alpha channel. Metal has just one always-blend-
+    // enabled TL pipeline for every section of every pass, so multiplying
+    // texColor.a in unconditionally here (tried and reverted) let real
+    // partial-alpha noise in ordinary vehicle textures (e.g. ijeepmg.paa,
+    // ~7% genuinely partial texels) show through as "see the other side of
+    // the model" -- GL33 never has this problem because that texture's
+    // sections never reach a blend-enabled draw call in its opaque pass.
+    // Properly fixing this needs Metal to implement the same two-pass
+    // opaque/blend split (a second, blend-disabled pipeline variant; or gate
+    // blending per-section via the existing GSectionFilter signal), not just
+    // a per-pixel alpha tweak in one shared shader.
+    out.useTexAlpha = 0.0;
     return out;
 }
 
@@ -186,19 +202,9 @@ fragment float4 fsMesh(VSOutMesh in [[stage_in]], constant FrameConstants& frame
     float4 texColor = tex.sample(samp, in.uv);
     float3 litColor = texColor.rgb * in.color.rgb;
     float3 finalColor = mix(litColor, frame.fogColor.rgb, in.fogFactor);
-    // Final alpha = material alpha (in.color.a, set by vsMesh) times texture
-    // alpha -- but ONLY when in.useTexAlpha says the bound texture's alpha
-    // channel is meaningful (Cutout/Blend, see ObjectConstantsMTL::flags).
-    // Diffuse-only legacy textures commonly leave the alpha channel at 0 (no
-    // real alpha data) -- multiplying that in unconditionally would make
-    // every ordinary opaque texture vanish (this was the actual cause of
-    // "still black" after the ambient/diffuse lighting fix, before material
-    // alpha was wired up). Skipping the multiply for those keeps them fully
-    // opaque while still letting real cutout/blend textures (fences,
-    // leaves, glass) use their actual per-pixel alpha instead of a single
-    // flat material-alpha value painted across the whole section.
-    float texAlpha = mix(1.0, texColor.a, in.useTexAlpha);
-    return float4(finalColor, in.color.a * texAlpha);
+    // Material alpha only (in.color.a) -- see vsMesh's useTexAlpha TODO for
+    // why texColor.a isn't factored in here (yet).
+    return float4(finalColor, in.color.a);
 }
 )";
 } // namespace

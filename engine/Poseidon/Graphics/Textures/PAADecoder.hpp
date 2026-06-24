@@ -12,6 +12,15 @@ struct DecodedImage
     std::vector<uint8_t> rgba;
     int width = 0;
     int height = 0;
+    // Source format's alpha-channel presence (NOT a decoded-buffer scan --
+    // straight from the format header, e.g. PacFormatFromDesc's `alpha`
+    // out-param). Diffuse-only formats with no real alpha channel commonly
+    // leave the decoded alpha byte at a meaningless constant/garbage value;
+    // callers must check this before trusting ClassifyAlpha on the decoded
+    // buffer, same tiering ClassifyTextureAlpha documents and TextureGL33::
+    // GetAlphaClass already follows via ITextureSource::IsAlpha().
+    bool hasAlphaChannel = false;
+    bool oneBitAlpha = false; // DXT1 punch-through-only alpha (no real blend)
     bool valid() const { return width > 0 && height > 0 && !rgba.empty(); }
 };
 

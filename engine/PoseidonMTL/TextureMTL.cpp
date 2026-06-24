@@ -44,9 +44,29 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
     _w = img.width;
     _h = img.height;
 
-    const AlphaStats stats = ClassifyAlpha(img.rgba.data(), static_cast<size_t>(_w) * static_cast<size_t>(_h));
-    _isAlpha = stats.kind != AlphaStats::Opaque;
-    _isTransparent = stats.kind == AlphaStats::Cutout;
+    // Same tiering TextureGL33::GetAlphaClass() uses (ClassifyTextureAlpha's
+    // documented policy): only decode-scan the alpha channel when the
+    // SOURCE FORMAT can actually carry partial alpha. Unconditionally
+    // running ClassifyAlpha on the decoded buffer (the previous bug here)
+    // misclassified ordinary diffuse-only textures -- formats with no real
+    // alpha channel commonly decode to a meaningless non-255 constant in
+    // that byte (e.g. ijeepmg.paa decoded ~69% alpha=0), which made them
+    // wrongly blend instead of render opaque.
+    AlphaStats decoded;
+    const AlphaStats* decodedPtr = nullptr;
+    if (img.hasAlphaChannel && !img.oneBitAlpha)
+    {
+        decoded = ClassifyAlpha(img.rgba.data(), static_cast<size_t>(_w) * static_cast<size_t>(_h));
+        decodedPtr = &decoded;
+    }
+    // TODO: chroma-key (palette transparent-index) textures aren't detected
+    // here -- always passing false, unlike GL33's _src->IsTransparent().
+    // Means a no-alpha P8 texture relying on a transparent palette index
+    // renders fully opaque on Metal instead of punch-through cutout.
+    const AlphaStats::Kind kind =
+        ClassifyTextureAlpha(img.hasAlphaChannel, /*isChromaKey=*/false, img.oneBitAlpha, decodedPtr);
+    _isAlpha = kind != AlphaStats::Opaque;
+    _isTransparent = kind == AlphaStats::Cutout;
 
     _gpuHandle = bootstrap.CreateTexture(_w, _h, img.rgba.data());
     if (_gpuHandle == 0)
