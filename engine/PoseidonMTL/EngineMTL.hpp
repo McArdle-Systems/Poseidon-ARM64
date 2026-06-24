@@ -106,6 +106,15 @@ class EngineMTL : public Engine
 
     // --- Hardware T&L mesh path (terrain/vehicles/characters) ---
     bool GetTL() const override { return true; }
+    // Base Engine::GetTLOnSurface() defaults to false; GL33 overrides it to
+    // true (EngineGL33.hpp:797). Without this, every OnSurface-flagged
+    // Shape::Draw (roads, ground decals, and -- per Object::DrawProxies --
+    // wheel/ground-contact proxies on drivable vehicles) is forced through
+    // the legacy CPU-transform path unconditionally, regardless of whether
+    // a hardware-TL GPU buffer exists for it. Suspected cause of the
+    // exploded-geometry bug on drivable (not wrecked) vehicles -- wrecks
+    // typically hide/remove their wheel proxies, drivable ones don't.
+    bool GetTLOnSurface() const override { return true; }
     VertexBuffer* CreateVertexBuffer(const Shape& src, VBType type) override;
     void EnableSunLight(bool enable) override { _sunEnabled = enable; }
     void SetMaterial(const TLMaterial& mat, const LightList& lights, const render::LegacySpec& spec) override;

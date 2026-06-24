@@ -176,10 +176,31 @@ class EngineMTLBootstrap
     // `dynamic` buffers are expected to be refreshed via UpdateMeshBuffer
     // (animated meshes); static ones are uploaded once and never touched
     // again. Returns a handle (>0), or 0 on failure -- same handle-bank
-    // pattern as CreateTexture.
-    int CreateMeshBuffer(const void* data, size_t byteSize, bool dynamic);
+    // pattern as CreateTexture. `debugLabel` (optional) sets MTL::Resource's
+    // setLabel so an Xcode GPU capture shows e.g. "VB dyn nv=412 ns=6"
+    // instead of an anonymous auto-numbered "MTLBuffer-363235-0" --
+    // otherwise every capture of a many-object scene is hundreds of
+    // identical-looking unlabeled buffers with no way to find the one that
+    // belongs to a specific Shape.
+    int CreateMeshBuffer(const void* data, size_t byteSize, bool dynamic, const char* debugLabel = nullptr);
+    // TODO: in-place memcpy update. Only safe for a buffer no other
+    // in-flight (recorded-this-frame-but-not-yet-GPU-executed) draw is
+    // still reading -- i.e. only safe when exactly one Shape::Draw call
+    // uses this handle per frame. VertexBufferMTL::CopyVertices no longer
+    // calls this for repeat updates (uses DestroyMeshBufferDeferred +
+    // CreateMeshBuffer instead, see its comment) precisely because that
+    // assumption broke: a cached Shape's buffer shared across multiple
+    // simultaneous object instances corrupted every-other-instance's
+    // geometry. Still used for the from-scratch path in CreateMeshBuffer's
+    // caller and any future genuinely-single-owner dynamic buffer.
     void UpdateMeshBuffer(int handle, const void* data, size_t byteSize);
     void DestroyMeshBuffer(int handle);
+    // Like DestroyMeshBuffer, but waits a full frame before actually
+    // freeing the buffer -- for a handle that might still be referenced by
+    // an already-recorded-but-not-yet-GPU-executed draw from earlier this
+    // same frame (Metal only records during the frame; nothing executes
+    // until commit(), so "earlier this frame" can still be in-flight).
+    void DestroyMeshBufferDeferred(int handle);
 
     // Binds the given vertex/index buffers + texture, uploads per-object and
     // per-frame constants, and issues one indexed triangle draw (uint16

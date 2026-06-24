@@ -77,9 +77,17 @@ const char* kShaderSourceMesh = R"(
 #include <metal_stdlib>
 using namespace metal;
 
+// VertexMeshMTL (EngineMTLBootstrap.hpp) is a tightly-packed 32-byte C++
+// struct (8 floats, no padding). Plain MSL float3 is 16-byte ALIGNED (not
+// 12), so a struct of float3+float3+float2 written naively here would be
+// padded to 48 bytes/vertex by the compiler -- a stride mismatch against
+// the real 32-byte buffer that reads every vertex past index 0 from the
+// wrong offset (neighboring vertices' normal/uv bytes reinterpreted as
+// position). packed_float3 forces the tightly-packed 12-byte layout that
+// actually matches VertexMeshMTL.
 struct VertexMesh {
-    float3 pos;
-    float3 norm;
+    packed_float3 pos;
+    packed_float3 norm;
     float2 uv;
 };
 
@@ -208,6 +216,14 @@ struct EngineMTLBootstrap::Impl
 
     int drawableWidth = 0;
     int drawableHeight = 0;
+
+    // Two-generation deferred-destroy queue for mesh buffers -- see
+    // DestroyMeshBufferDeferred's doc comment. EndFrame() destroys
+    // whatever's in the OTHER generation (queued during the frame before
+    // last) and rotates, so anything queued this frame gets a full extra
+    // frame before it's actually freed.
+    std::vector<int> pendingMeshBufferDestroy[2];
+    int destroyGeneration = 0;
 };
 
 EngineMTLBootstrap::EngineMTLBootstrap() : _impl(new Impl()) {}
@@ -709,9 +725,19 @@ void EngineMTLBootstrap::EndFrame()
     _impl->frameHadColorClear = false;
 
     pool->release();
+
+    // Free buffers queued for destruction the frame before last -- by now
+    // the GPU has had a full frame to finish any draw that referenced them.
+    // Then rotate so this frame's new deferred-destroys land in the slot
+    // that just emptied out.
+    int oldGen = 1 - _impl->destroyGeneration;
+    for (int h : _impl->pendingMeshBufferDestroy[oldGen])
+        DestroyMeshBuffer(h);
+    _impl->pendingMeshBufferDestroy[oldGen].clear();
+    _impl->destroyGeneration = oldGen;
 }
 
-int EngineMTLBootstrap::CreateMeshBuffer(const void* data, size_t byteSize, bool dynamic)
+int EngineMTLBootstrap::CreateMeshBuffer(const void* data, size_t byteSize, bool dynamic, const char* debugLabel)
 {
     if (_impl->device == nullptr || data == nullptr || byteSize == 0)
         return 0;
@@ -721,6 +747,12 @@ int EngineMTLBootstrap::CreateMeshBuffer(const void* data, size_t byteSize, bool
     if (buf == nullptr)
         return 0;
     (void)dynamic; // storage mode is the same either way; kept for caller-side bookkeeping only
+
+    if (debugLabel != nullptr)
+    {
+        NS::String* label = NS::String::string(debugLabel, NS::StringEncoding::UTF8StringEncoding);
+        buf->setLabel(label);
+    }
 
     _impl->meshBuffers.push_back(buf);
     return static_cast<int>(_impl->meshBuffers.size());
@@ -746,6 +778,13 @@ void EngineMTLBootstrap::DestroyMeshBuffer(int handle)
         slot->release();
         slot = nullptr;
     }
+}
+
+void EngineMTLBootstrap::DestroyMeshBufferDeferred(int handle)
+{
+    if (handle <= 0)
+        return;
+    _impl->pendingMeshBufferDestroy[_impl->destroyGeneration].push_back(handle);
 }
 
 void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHandle, int firstIndex, int indexCount,

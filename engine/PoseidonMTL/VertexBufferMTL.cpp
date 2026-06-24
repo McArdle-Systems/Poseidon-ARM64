@@ -3,6 +3,9 @@
 
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/Poly.hpp>
+#include <Poseidon/Foundation/Framework/Log.hpp>
+
+#include <cstdio>
 
 namespace Poseidon
 {
@@ -42,10 +45,32 @@ void VertexBufferMTL::CopyVertices(const Shape& src)
     }
 
     const size_t byteSize = verts.size() * sizeof(VertexMeshMTL);
+    char label[64];
+    std::snprintf(label, sizeof(label), "VB %s nv=%d ns=%d", _dynamic ? "dyn" : "static", _vertexCount,
+                  src.NSections());
     if (_vbHandle == 0)
-        _vbHandle = _bootstrap.CreateMeshBuffer(verts.data(), byteSize, _dynamic);
-    else
-        _bootstrap.UpdateMeshBuffer(_vbHandle, verts.data(), byteSize);
+    {
+        _vbHandle = _bootstrap.CreateMeshBuffer(verts.data(), byteSize, _dynamic, label);
+        return;
+    }
+
+    // One VertexBufferMTL is shared across every object instance that uses
+    // the same cached Shape resource (e.g. two soldiers wearing the same
+    // model) -- confirmed empirically (logging showed the same handle
+    // Update()'d twice in one frame). Metal only *records* draw calls
+    // during the frame; nothing executes until commit(), so overwriting
+    // the buffer in place here would corrupt an earlier instance's
+    // already-recorded-but-not-yet-GPU-executed draw from earlier this
+    // same frame -- by the time the GPU actually ran, both draws would
+    // read whichever instance's data was written last. Allocate fresh
+    // each repeat call instead and defer-destroy the old one (mirrors
+    // GL33's MapDynamicWriteInvalidate orphan-and-get-new-storage pattern,
+    // which exists in EngineGL33_VertexBuffer.cpp for exactly this hazard).
+    int newHandle = _bootstrap.CreateMeshBuffer(verts.data(), byteSize, _dynamic, label);
+    if (newHandle == 0)
+        return; // allocation failed -- keep drawing with the stale buffer rather than nothing
+    _bootstrap.DestroyMeshBufferDeferred(_vbHandle);
+    _vbHandle = newHandle;
 }
 
 bool VertexBufferMTL::Init(const Shape& src, VBType type)
@@ -59,12 +84,19 @@ bool VertexBufferMTL::Init(const Shape& src, VBType type)
     if (_vbHandle == 0)
         return false;
 
-    // Fan-triangulate each face (N-gon -> N-2 triangles), same as GL33.
+    // Fan-triangulate each face (N-gon -> N-2 triangles), same as GL33
+    // (which asserts poly.N() >= 3 -- a degenerate face would make this
+    // negative, corrupting totalIndices and every section's index range
+    // computed below it). Checked empirically against real game models
+    // (logged for one investigation, zero hits) -- skip defensively rather
+    // than assert, since release builds have no assert to catch it anyway.
     std::vector<uint16_t> indices;
     int totalIndices = 0;
     for (Offset o = src.BeginFaces(); o < src.EndFaces(); src.NextFace(o))
     {
         const Poly& poly = src.Face(o);
+        if (poly.N() < 3)
+            continue;
         totalIndices += (poly.N() - 2) * 3;
     }
     if (totalIndices <= 0)
@@ -96,6 +128,8 @@ bool VertexBufferMTL::Init(const Shape& src, VBType type)
         for (Offset o = sec.beg; o < sec.end; src.NextFace(o))
         {
             const Poly& face = src.Face(o);
+            if (face.N() < 3)
+                continue; // see the matching guard above -- keeps this section's range consistent with it
             size += (face.N() - 2) * 3;
         }
         _sections[static_cast<size_t>(i)].beg = start;

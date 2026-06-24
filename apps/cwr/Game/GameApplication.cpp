@@ -1665,7 +1665,7 @@ void GameApplication::StartGameMode()
     {
         extern bool Benchmark; // Synced from AppConfig in appConfig.cpp
         extern bool AutoTest;
-        extern char LoadFile[256];
+        extern char LoadFile[512]; // actual definition: Shutdown.cpp
         const std::string& testMission = AppConfig::Instance().GetTestMissionPath();
         if (!testMission.empty())
         {
@@ -1686,8 +1686,27 @@ void GameApplication::StartGameMode()
         }
         else if (Benchmark)
         {
-            snprintf(LoadFile, sizeof(LoadFile), "%s",
-                     (const char*)"Users\\Test\\Missions\\Benchmark.Abel\\mission.sqm");
+            // Originally a path relative to the game install dir
+            // (Users\Test\Missions\Benchmark.Abel\mission.sqm) -- this port
+            // moved user/editor missions to GamePaths::MissionsDir()
+            // (<UserContentDir>/missions/, lowercase), so that hardcoded
+            // path never resolved here; -benchmark silently fell through to
+            // the normal menu instead of erroring. Mission folder name on
+            // disk is lowercase ("benchmark.abel"), matching the editor's
+            // own casing convention for this directory.
+            const std::string benchmarkPath = GamePaths::Instance().MissionsDir() + "benchmark.abel/mission.sqm";
+            const auto loadPath = MissionPathLoader::Loader::ResolveMissionFile(benchmarkPath);
+            if (loadPath)
+            {
+                strncpy(LoadFile, loadPath->c_str(), sizeof(LoadFile) - 1);
+                LoadFile[sizeof(LoadFile) - 1] = 0;
+                LOG_INFO(Core, "Benchmark mission: {}", *loadPath);
+            }
+            else
+            {
+                LOG_ERROR(Core, "Benchmark mission not found at '{}' -- falling back to the normal menu",
+                          benchmarkPath);
+            }
         }
         if (AppConfig::Instance().IsViewerMode())
         {
