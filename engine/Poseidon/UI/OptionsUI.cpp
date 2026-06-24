@@ -1967,7 +1967,10 @@ void DisplayInterrupt::OnButtonClicked(int idc)
     switch (idc)
     {
         case IDC_INT_OPTIONS:
-            CreateChild(new OptionsShell(this, false, false));
+            if (Res.FindEntry("RscOptionsShell"))
+                CreateChild(new OptionsShell(this, false, false));
+            else
+                CreateChild(new DisplayOptions(this, false, false));
             break;
         default:
             Exit(idc);
@@ -2111,6 +2114,10 @@ void StartRandomCutscene(RString world)
 
     const ParamEntry& cls = Pars >> "CfgWorlds" >> world >> "cutscenes";
     int n = cls.GetSize();
+    if (n <= 0)
+    {
+        return;
+    }
     int i = toIntFloor(n * GRandGen.RandomValue());
 
     RString name = cls[i];
@@ -2119,9 +2126,9 @@ void StartRandomCutscene(RString world)
     //	SetCampaign("");
     SetBaseDirectory("");
 
-    ParseIntro();
+    bool parsed = ParseIntro();
 
-    if (CurrentTemplate.groups.Size() > 0)
+    if (parsed && CurrentTemplate.groups.Size() > 0)
     {
         GLOB_WORLD->SwitchLandscape(GetWorldName(world));
         GWorld->ActivateAddons(CurrentTemplate.addOns);
