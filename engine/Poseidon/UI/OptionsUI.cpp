@@ -2107,7 +2107,6 @@ bool ContinueSaved = true;
 
 void StartRandomCutscene(RString world)
 {
-    static int logCount = 0;
     if (world.GetLength() == 0)
     {
         world = GetMenuInitWorld();
@@ -2117,11 +2116,6 @@ void StartRandomCutscene(RString world)
     int n = cls.GetSize();
     if (n <= 0)
     {
-        if (logCount < 8)
-        {
-            LOG_INFO(UI, "[menu cutscene] world='{}' has no configured cutscenes", (const char*)world);
-            logCount++;
-        }
         return;
     }
     int i = toIntFloor(n * GRandGen.RandomValue());
@@ -2133,14 +2127,6 @@ void StartRandomCutscene(RString world)
     SetBaseDirectory("");
 
     bool parsed = ParseIntro();
-
-    if (logCount < 8)
-    {
-        LOG_INFO(UI, "[menu cutscene] world='{}' cutscene='{}' parsed={} groups={} addons={}",
-                 (const char*)world, (const char*)name, parsed ? 1 : 0,
-                 CurrentTemplate.groups.Size(), CurrentTemplate.addOns.Size());
-        logCount++;
-    }
 
     if (parsed && CurrentTemplate.groups.Size() > 0)
     {
