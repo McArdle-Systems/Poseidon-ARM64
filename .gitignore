@@ -1,3 +1,6 @@
+# OS junk
+.DS_Store
+
 # Build outputs
 /build/
 /dist/

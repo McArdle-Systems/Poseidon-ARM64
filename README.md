@@ -1,3 +1,16 @@
+# Poseidon-ARM64 — a community fork
+
+> **This is a modified, unofficial community fork**, not the original program
+> and not affiliated with or endorsed by Bohemia Interactive. It makes the
+> engine build and run natively on Apple Silicon (arm64 macOS) — x86 SSE/MMX
+> intrinsics ported to NEON, a couple of glibc/Linux-only API gaps closed, and
+> the toolchain/linker pieces needed for a clean macOS build — on top of the
+> upstream source. Renders via the existing cross-platform GL33 backend; no
+> renderer changes. No rights to "ARMA", "Operation Flashpoint", or any other
+> Bohemia Interactive trademark are claimed or implied — see the Additional
+> Terms in [`LICENSE`](LICENSE). Upstream:
+> <https://github.com/BohemiaInteractive/CWR>.
+
 # Arma: Cold War Assault - Remastered
 
 This repository holds the engine and game source code (codename *Poseidon*) behind *Arma: Cold War Assault* — the game first released in 2001 as *Operation Flashpoint: Cold War Crisis*. That release launched Bohemia Interactive and began the technology lineage that later grew into Real Virtuality, Arma, and Enfusion. The code has been modernized to C++20, built with CMake and Clang, with cross-platform support for Windows x64 and Linux x64.
