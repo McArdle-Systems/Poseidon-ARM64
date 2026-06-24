@@ -429,6 +429,8 @@ DecodedImage DecodePAABuffer(const void* data, size_t size, bool isPaa)
 
     img.width = mip._w;
     img.height = mip._h;
+    img.hasAlphaChannel = alpha;
+    img.oneBitAlpha = (format == PacDXT1);
     // Dimensions come from the mip header; reject absurd sizes before width*height*4
     // overflows int (a tiny rgba alloc the decoders then overrun) or drives a huge
     // allocation. PAA textures are far below this cap.
@@ -604,6 +606,8 @@ DecodedImage DecodePAAFileMip(const std::string& path, int mipLevel)
 
     img.width = mip._w;
     img.height = mip._h;
+    img.hasAlphaChannel = alpha;
+    img.oneBitAlpha = (format == PacDXT1);
     // Reject absurd dimensions (mip header is attacker-controlled) before
     // width*height*4 overflows int into a tiny rgba alloc the decoders overrun.
     if (img.width <= 0 || img.height <= 0 || img.width > 8192 || img.height > 8192)
