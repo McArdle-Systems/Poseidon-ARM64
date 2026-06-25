@@ -21,6 +21,11 @@ struct DecodedImage
     // GetAlphaClass already follows via ITextureSource::IsAlpha().
     bool hasAlphaChannel = false;
     bool oneBitAlpha = false; // DXT1 punch-through-only alpha (no real blend)
+    // Palette has a transparent index (PacPalette::_isTransparent, same signal
+    // ITextureSource::IsTransparent() exposes on the GL33 side) -- the punch-
+    // through holes are already baked into rgba as the average color, so this
+    // is a format-level Cutout signal independent of the decoded alpha bytes.
+    bool isChromaKey = false;
     bool valid() const { return width > 0 && height > 0 && !rgba.empty(); }
 };
 

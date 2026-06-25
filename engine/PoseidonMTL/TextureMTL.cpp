@@ -59,12 +59,8 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
         decoded = ClassifyAlpha(img.rgba.data(), static_cast<size_t>(_w) * static_cast<size_t>(_h));
         decodedPtr = &decoded;
     }
-    // TODO: chroma-key (palette transparent-index) textures aren't detected
-    // here -- always passing false, unlike GL33's _src->IsTransparent().
-    // Means a no-alpha P8 texture relying on a transparent palette index
-    // renders fully opaque on Metal instead of punch-through cutout.
     const AlphaStats::Kind kind =
-        ClassifyTextureAlpha(img.hasAlphaChannel, /*isChromaKey=*/false, img.oneBitAlpha, decodedPtr);
+        ClassifyTextureAlpha(img.hasAlphaChannel, img.isChromaKey, img.oneBitAlpha, decodedPtr);
     _isAlpha = kind != AlphaStats::Opaque;
     _isTransparent = kind == AlphaStats::Cutout;
 

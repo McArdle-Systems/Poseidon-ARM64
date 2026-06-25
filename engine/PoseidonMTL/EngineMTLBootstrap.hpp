@@ -224,9 +224,46 @@ class EngineMTLBootstrap
     // and texColor.a folded into the output alpha; every other section
     // (Opaque or Cutout) draws with blending off, so texture-alpha noise in
     // ordinary diffuse textures never makes part of the model see-through.
+    // `noZWrite` mirrors the legacy spec's Backend::NoZWrite bit (set on every
+    // shadow polygon by Shadow.cpp's MakeShadow): depth test stays on (still
+    // occluded correctly) but the write is skipped, so a shadow drawn before
+    // its own caster in submission order can't win the depth test and make
+    // the caster fail depth-test against it afterwards.
+    //
+    // `isShadow` (Backend::IsShadow) routes to the shadow stencil-MARK
+    // pipeline/depth-stencil state instead of the ordinary blend path --
+    // color writes off, stencil ALWAYS+REPLACE(0xFF) gated by the normal
+    // depth test (so a shadow occluded by closer solid geometry doesn't
+    // mark the stencil there). This must be called only between
+    // BeginShadowPass()/EndShadowPass(): those brackets are what actually
+    // darken the framebuffer (a single fullscreen quad gated on the stencil
+    // mask), exactly once per pixel regardless of how many overlapping
+    // pieces a caster's shadow mesh has, or how many different casters'
+    // shadows land on the same pixel -- see BeginShadowPass's doc comment.
     void DrawSectionTL(int vertexBufferHandle, int indexBufferHandle, int firstIndex, int indexCount,
                        int textureHandle, const ObjectConstantsMTL& obj, const FrameConstantsMTL& frame,
-                       bool blendEnabled);
+                       bool blendEnabled, bool noZWrite, bool isShadow);
+
+    // Shadow pipeline, mirroring GL33's EngineGL33::BeginShadowPass/
+    // EndShadowPass (EngineGL33_Draw.cpp) and the contract documented on
+    // Engine::BeginShadowPass (Engine.hpp): wraps the whole frame's
+    // per-caster shadow draw loop (Scene::DrawObjectsAndShadowsPass2), not
+    // one caster at a time.
+    //
+    // BeginShadowPass(): sets the stencil reference to 0xFF for the
+    // duration of the bracket. Every DrawSectionTL(..., isShadow=true) call
+    // until EndShadowPass() only stamps the stencil mask (color writes off,
+    // alpha-cutout discard so foliage gaps don't phantom-stamp) -- nothing
+    // visible happens yet, so overlapping shadow casters/pieces stamping the
+    // same pixel multiple times is harmless (REPLACE is idempotent).
+    //
+    // EndShadowPass(shadowFactor): draws one fullscreen quad, stencil-gated
+    // (EQUAL 0xFF), blended (Zero, OneMinusSourceAlpha) to darken every
+    // marked pixel by (1 - shadowFactor) exactly once -- then restores the
+    // stencil reference to 0 so subsequent ordinary draws resume resetting
+    // the mask for the next frame's shadow pass.
+    void BeginShadowPass();
+    void EndShadowPass(float shadowFactor);
 
   private:
     bool SetupDevice(); // shared by Init() and AttachToWindow()

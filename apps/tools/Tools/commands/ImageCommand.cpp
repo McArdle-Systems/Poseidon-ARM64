@@ -67,6 +67,8 @@ static void setupImageInspect(CLI::App& image)
             Poseidon::DecodedImage img = Poseidon::DecodePAAFile(inputPath);
             if (img.valid())
             {
+                std::cout << "Chroma-key (palette transparent index): " << (img.isChromaKey ? "yes" : "no")
+                          << std::endl;
                 const size_t n = static_cast<size_t>(img.width) * static_cast<size_t>(img.height);
                 const Poseidon::AlphaStats a = Poseidon::ClassifyAlpha(img.rgba.data(), n);
                 const char* route =

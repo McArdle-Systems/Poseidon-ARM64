@@ -135,6 +135,14 @@ class EngineMTL : public Engine
     void EndMeshTL(const Shape& sMesh) override {}
     void DrawSectionTL(const Shape& sMesh, int beg, int end) override;
 
+    // Brackets Scene::DrawObjectsAndShadowsPass2's per-caster shadow draw
+    // loop (one call per frame, not per caster) -- see Engine::BeginShadowPass's
+    // doc comment (Engine.hpp) for the two-phase mark/darken contract this
+    // implements, and EngineMTLBootstrap::BeginShadowPass/EndShadowPass for
+    // the Metal side of it.
+    void BeginShadowPass() override;
+    void EndShadowPass() override;
+
     AbstractTextBank* TextBank() override;
     void TextureDestroyed(Texture* /*tex*/) override {}
 
@@ -197,6 +205,15 @@ class EngineMTL : public Engine
     // True only for AlphaStats::Blend textures (set alongside _tlObject by
     // PrepareTriangleTL) -- selects DrawSectionTL's blend-enabled pipeline.
     bool _tlSectionIsBlend = false;
+    // True when the section's legacy spec carries Backend::NoZWrite (shadow
+    // polys, see Shadow.cpp's MakeShadow) -- selects DrawSectionTL's
+    // write-disabled depth state so shadows can't win the depth test against
+    // their own caster drawn later in the same pass.
+    bool _tlSectionNoZWrite = false;
+    // True when the section's legacy spec carries Backend::IsShadow --
+    // selects DrawSectionTL's dedicated stencil-exclusion pipeline/depth
+    // state (see EngineMTLBootstrap::DrawSectionTL's isShadow doc comment).
+    bool _tlSectionIsShadow = false;
     bool _sunEnabled = false;
 
     void CreateWindowAndDevice();

@@ -580,6 +580,20 @@ void Object::DrawShadow(Shape* shadow, Vector3Par shadowPos, ClipFlags clipFlags
     // (PSShadow is layout-agnostic).
     int spec = IsOnSurface | IsShadow | IsAlphaFog;
 
+    // TODO(metal-shadows): confirmed via live instrumentation (2026-06-25)
+    // that shadow casters in a typical scene mostly have shadow->GetVertexBuffer()
+    // == nullptr and so fall through to the legacy per-face path below
+    // (GEngine->DrawPolygon -> EngineMTL's 2D alpha-blend pipeline) instead
+    // of ever reaching DrawSectionTL's isShadow branch. That legacy path has
+    // no stencil exclusion at all, so it still reproduces the original
+    // "overlapping shadow pieces double-darken" bug on Metal -- the new
+    // BeginShadowPass/EndShadowPass mark+darken scheme (EngineMTLBootstrap)
+    // only fixes casters that actually get a HW vertex buffer. Need to find
+    // why GetVertexBuffer() is null here (ConvertToVBuffer is called
+    // unconditionally in RemmemberShadow::Init/Object::RecalcShadow) and
+    // either fix that, or give the legacy path its own stencil-mark route
+    // through EngineMTL (it currently has none -- DrawPolygon/DrawIndexedFan3D
+    // always goes through the plain 2D blend pipeline regardless of IsShadow).
     if (GEngine->GetTL() && EnableHWTLState && shadow->GetVertexBuffer() && !(spec & OnSurface))
     {
         // T&L shadow drawing

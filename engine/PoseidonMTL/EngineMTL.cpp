@@ -395,7 +395,7 @@ void EngineMTL::SetMaterial(const TLMaterial& mat, const LightList& /*lights*/, 
 // this right before each DrawSectionTL, same role PrepareTriangle plays for
 // the legacy path (GL33's equivalent is the SetTexture call PolyProperties::
 // PrepareTL makes via PrepareTriangleTL).
-void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& /*spec*/)
+void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& spec)
 {
     _tlCurrentTexture = mip.IsOK() ? GpuHandleOf(mip._texture) : 0;
     // Runs after SetMaterial (Shape::Draw's PrepareTL call order), right
@@ -407,6 +407,12 @@ void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& 
     const bool isCutout = tex && tex->IsTransparent();
     _tlObject.flags[0] = isCutout ? 1.0f : 0.0f;
     _tlSectionIsBlend = isAlpha && !isCutout;
+    _tlSectionNoZWrite = render::Has(spec.backend, render::Backend::NoZWrite);
+    // Shadow polys (Shadow.cpp's MakeShadow) carry no texture and route
+    // through their own dedicated stencil-exclusion pipeline regardless of
+    // isAlpha/isCutout/blendEnabled above -- see EngineMTLBootstrap::
+    // DrawSectionTL's isShadow doc comment.
+    _tlSectionIsShadow = render::Has(spec.backend, render::Backend::IsShadow);
 }
 
 // Ported from GL33's PrepareMeshTL/PrepareMeshTLImpl (EngineGL33_Mesh.cpp).
@@ -478,12 +484,26 @@ void EngineMTL::DrawSectionTL(const Shape& sMesh, int beg, int end)
         return;
 
     _bootstrap.DrawSectionTL(buf->VertexBufferHandle(), buf->IndexBufferHandle(), firstIndex, indexCount,
-                             _tlCurrentTexture, _tlObject, _tlFrame, _tlSectionIsBlend);
+                             _tlCurrentTexture, _tlObject, _tlFrame, _tlSectionIsBlend, _tlSectionNoZWrite,
+                             _tlSectionIsShadow);
 }
 
 void EngineMTL::DrawPolygon(const VertexIndex* i, int n)
 {
     DrawIndexedFan3D(i, n);
+}
+
+void EngineMTL::BeginShadowPass()
+{
+    _bootstrap.BeginShadowPass();
+}
+
+// shadowFactor scale matches Shadow.cpp's Object::DrawShadow (GetShadowFactor()
+// is 0..256, the per-poly shadow material's alpha there is GetShadowFactor() *
+// (1.0/256)) -- the single darken quad here needs the same overall darkness.
+void EngineMTL::EndShadowPass()
+{
+    _bootstrap.EndShadowPass(static_cast<float>(GetShadowFactor()) * (1.0f / 256.0f));
 }
 
 void EngineMTL::DrawSection(const FaceArray& face, Offset beg, Offset end)
