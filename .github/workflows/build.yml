@@ -37,7 +37,7 @@ jobs:
             vcpkg_triplet: x64-linux-clang
             build_dir: build/linux-x64-clang-rwdi
           - name: macOS (Apple Silicon) RelWithDebInfo
-            os: macos-26
+            os: [self-hosted, macOS, ARM64]
             preset: macos-arm64-clang-rwdi
             vcpkg_triplet: arm64-osx
             build_dir: build/macos-arm64-clang-rwdi
