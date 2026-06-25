@@ -75,11 +75,16 @@ jobs:
             libwayland-dev \
             wayland-protocols
 
-      - name: Install macOS homebrew packages
+      - name: Verify macOS dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install \
-            clang-format
+          command -v brew
+          command -v cmake
+          command -v ninja
+          command -v ccache
+          command -v clang
+          command -v clang++
+          command -v clang-format
 
       - name: Setup MSVC developer environment
         if: runner.os == 'Windows'
@@ -103,21 +108,27 @@ jobs:
           max-size: 1G
 
       - name: Setup CMake and Ninja
+        if: runner.os != 'macOS'
         uses: lukka/get-cmake@latest
 
       - name: Show toolchain versions
+        if: runner.os != 'Windows'
+        run: |
+          cmake --version
+          ninja --version
+          ccache --version
+          clang --version
+          clang++ --version
+
+      - name: Show Windows toolchain versions
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           cmake --version
           ninja --version
           ccache --version
-          if ("${{ runner.os }}" -eq "Windows") {
-            clang-cl --version
-            link.exe /?
-          } else {
-            clang --version
-            clang++ --version
-          }
+          clang-cl --version
+          link.exe /?
 
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
@@ -151,6 +162,18 @@ jobs:
         run: cmake --build ${{ matrix.build_dir }}
 
       - name: Test
+        if: runner.os != 'Windows'
+        env:
+          CTEST_EXCLUDE: ${{ matrix.ctest_exclude }}
+        run: |
+          if [ -z "${CTEST_EXCLUDE}" ]; then
+            ctest --test-dir '${{ matrix.build_dir }}' --output-on-failure
+          else
+            ctest --test-dir '${{ matrix.build_dir }}' --output-on-failure -E "${CTEST_EXCLUDE}"
+          fi
+
+      - name: Test
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
           CTEST_EXCLUDE: ${{ matrix.ctest_exclude }}
@@ -163,10 +186,9 @@ jobs:
 
       - name: Smoke test macOS renderers
         if: runner.os == 'macOS'
-        shell: pwsh
         run: |
-          & '${{ matrix.build_dir }}/apps/tools/GL33SmokeTest/GL33SmokeTest' --check
-          & '${{ matrix.build_dir }}/apps/tools/MetalSmokeTest/MetalSmokeTest' --check
+          '${{ matrix.build_dir }}/apps/tools/GL33SmokeTest/GL33SmokeTest' --check
+          '${{ matrix.build_dir }}/apps/tools/MetalSmokeTest/MetalSmokeTest' --check
 
       - name: Upload CTest logs
         if: failure()
