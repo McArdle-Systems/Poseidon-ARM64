@@ -66,6 +66,23 @@ cmake --preset macos-arm64-clang-rwdi
 cmake --build build/macos-arm64-clang-rwdi --target PoseidonGame -j8
 ```
 
+### Clean rebuild
+
+CMake bakes the absolute source/build path into the generated build tree
+(`CMakeCache.txt`, `compile_commands.json`, Ninja files). If you move or
+rename the repo's checkout directory, reconfigure from scratch rather than
+reusing the old build dir:
+
+```sh
+rm -rf build/macos-arm64-clang-rwdi
+cmake --preset macos-arm64-clang-rwdi
+cmake --build build/macos-arm64-clang-rwdi --target PoseidonGame -j8
+```
+
+vcpkg's binary cache (`~/.cache/vcpkg/archives` by default) is keyed by
+package content/ABI hash, not by path, so this won't trigger a from-source
+rebuild of dependencies — they're restored from cache.
+
 Game data: drop your Demo or retail game data into `packages/Remaster/`
 (git-ignored local staging dir — see [Getting game data](#getting-game-data-to-run-what-you-build)).
 Point the game at that directory with `-C`/`--work-dir` rather than `cd`-ing
