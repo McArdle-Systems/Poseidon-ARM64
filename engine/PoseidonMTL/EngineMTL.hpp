@@ -244,6 +244,14 @@ class EngineMTL : public Engine
     // DrawIndexedFan3D (the legacy 3D fan path). `depthMode`/`blendMode`/
     // `sampler` default to ordinary 2D/UI state -- only DrawIndexedFan3D
     // passes a real value through from PrepareTriangle.
+    //
+    // `specular` mirrors GL33's per-vertex specular/fog attribute (see
+    // TransLight.cpp's vertex fog packing) -- nullptr (the default, used by
+    // every caller except DrawIndexedFan3D) means "no fog", matching
+    // ordinary 2D/UI content. DrawIndexedFan3D passes the legacy TLVertex's
+    // real specular.a as the fog blend factor, fixing 3D geometry drawn
+    // through this path (e.g. Landscape::DrawHorizont's ClipUser0 fade
+    // strip) rendering with no fog at all.
     enum
     {
         kMaxPolyVerts = 32
@@ -254,7 +262,8 @@ class EngineMTL : public Engine
                    render::BlendMode blendMode = render::BlendMode::AlphaBlend,
                    render::SamplerMode sampler = {render::SamplerFilter::Linear, true, true},
                    render::SurfaceMode surface = render::SurfaceMode::Default,
-                   render::ShaderFamily shader = render::ShaderFamily::Normal);
+                   render::ShaderFamily shader = render::ShaderFamily::Normal,
+                   const PackedColor* specular = nullptr);
 
     // Reads up to kMaxPolyVerts vertices from the bound _mesh by index and
     // draws them as a fan via DrawFan2D (unclipped -- full backbuffer rect).

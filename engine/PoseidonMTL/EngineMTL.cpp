@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 namespace Poseidon
 {
@@ -211,7 +212,8 @@ void EngineMTL::PixelToNDC(float px, float py, float& ndcX, float& ndcY) const
 void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* rhw, const float* uv,
                           const PackedColor* colors, int n, int textureHandle,
                           const Rect2DAbs& clip, render::DepthMode depthMode, render::BlendMode blendMode,
-                          render::SamplerMode sampler, render::SurfaceMode surface, render::ShaderFamily shader)
+                          render::SamplerMode sampler, render::SurfaceMode surface, render::ShaderFamily shader,
+                          const PackedColor* specular)
 {
     if (n < 3 || n > kMaxPolyVerts)
         return;
@@ -229,7 +231,8 @@ void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* rhw, con
         verts[i].w = clipW;
         verts[i].u = uv[i * 2];
         verts[i].v = uv[i * 2 + 1];
-        verts[i].pad0 = 0.0f;
+        // GL33's vsScreen: `vFogTC = aSpecular.a` -- same convention here.
+        verts[i].fogTC = specular ? (specular[i].A8() / 255.0f) : 1.0f;
         verts[i].pad1 = 0.0f;
         verts[i].r = colors[i].R8() / 255.0f;
         verts[i].g = colors[i].G8() / 255.0f;
@@ -246,9 +249,10 @@ void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* rhw, con
         indices[idxCount++] = static_cast<uint16_t>(i + 1);
     }
 
+    const float fogColor[3] = {_fogColor.R(), _fogColor.G(), _fogColor.B()};
     _bootstrap.DrawTriangles2D(verts, n, indices, idxCount, textureHandle, static_cast<int>(clip.x),
                                static_cast<int>(clip.y), static_cast<int>(clip.w), static_cast<int>(clip.h),
-                               z != nullptr, depthMode, blendMode, sampler, surface, shader);
+                               z != nullptr, depthMode, blendMode, sampler, surface, shader, fogColor);
 }
 
 void EngineMTL::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect2DAbs& clip)
@@ -402,6 +406,7 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
     float rhw[kMaxPolyVerts];
     float uv[kMaxPolyVerts * 2];
     PackedColor colors[kMaxPolyVerts];
+    PackedColor specular[kMaxPolyVerts];
     for (int k = 0; k < n; k++)
     {
         const TLVertex& v = _mesh->GetVertex(indices[k]);
@@ -412,11 +417,12 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
         uv[k * 2] = v.t0.u;
         uv[k * 2 + 1] = v.t0.v;
         colors[k] = v.color;
+        specular[k] = v.specular;
     }
 
     const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
     DrawFan2D(xy, z, rhw, uv, colors, n, _currentTriTexture, fullScreen, _currentTriDepthMode, _currentTriBlendMode,
-              _currentTriSampler, _currentTriSurfaceMode, _currentTriShader);
+              _currentTriSampler, _currentTriSurfaceMode, _currentTriShader, specular);
 }
 
 // GL33's equivalent is the legacy/queued path's FlushQueue -> ApplyPassState
@@ -600,7 +606,6 @@ void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& 
     _tlSectionShader = d.shader;
     if (d.shader == render::ShaderFamily::Detail)
     {
-        _tlObject.flags[1] = 1.0f;
         // d.shader==Detail covers both DetailTexture- and SpecularTexture-
         // tagged sections (BuildRenderPassDescriptor.hpp's generic mtMask
         // branch collapses both to Detail when GrassTexture isn't set).
@@ -610,6 +615,21 @@ void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& 
         // DetailTexture, and need the specular/bump texture there, not the
         // ground detail texture.
         const bool isDetailTagged = render::Has(spec.backend, render::Backend::DetailTexture);
+        // Only flag true ground-Detail sections for fsMeshOpaque/Blend's
+        // detail-multiply (baseLit * detailTex.a * 2) -- confirmed via a
+        // magenta-marker test that water/SpecularTexture sections go through
+        // this exact branch today (no dedicated water shader yet, see
+        // EngineMTLBootstrap.cpp's Water/Detail/Grass pipeline TODO). That
+        // formula treats the secondary texture's alpha as a ground-texture
+        // brightness multiplier; for a bump/normal map (water's case) alpha
+        // is unrelated and can crush the lit water color toward black. GL33's
+        // dedicated PSWater shader instead adds a bump-driven specular
+        // highlight, never multiplying toward black. Leaving flags[1] at its
+        // default 0 here falls through to applyDetailMode's plain-baseLit
+        // branch -- correct brightness, just without the specular sparkle,
+        // until a real water shader lands.
+        if (isDetailTagged)
+            _tlObject.flags[1] = 1.0f;
         if (_textBank)
         {
             TextureMTL* tex = isDetailTagged ? _textBank->GetDetailTexture() : _textBank->GetSpecularTexture();
@@ -653,13 +673,20 @@ void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& 
     }
     else
     {
-        // IsAlphaFog is an explicit alpha-blended effect/material mode
-        // (cloudlets, bullet impacts, craters, HUD-ish fades). Do not let
-        // texture classification override it: some of these shapes are
-        // primarily vertex-colored, and GL33 routes the spec bit itself to
-        // AlphaBlend regardless of texture alpha stats.
+        // IsAlphaFog (cloudlets, bullet impacts, craters, HUD-ish fades) and
+        // plain IsAlpha (vertex-color-alpha-blended effects/materials with an
+        // otherwise-opaque texture) are both explicit alpha-blended material
+        // modes. Do not let texture classification override either: GL33
+        // routes the spec bit itself to AlphaBlend regardless of texture
+        // alpha stats (BuildRenderPassDescriptor.hpp's Has(backend,
+        // Backend::IsAlpha) branch sets d.blend unconditionally), so Metal
+        // must too -- relying on texture stats here misses shapes whose
+        // alpha comes from vertex color rather than the bound texture, which
+        // would otherwise silently render as a hard-edged opaque shape
+        // instead of fading.
         const bool forceBlend = d.blend == render::BlendMode::AlphaBlend &&
-                                d.fog == render::FogMode::AlphaFog;
+                                (d.fog == render::FogMode::AlphaFog ||
+                                 render::Has(spec.backend, render::Backend::IsAlpha));
         const bool isBlend = forceBlend || (isAlpha && !isCutout);
         _tlSectionBlendMode = isBlend ? render::BlendMode::AlphaBlend : render::BlendMode::Opaque;
         // Match GL33/BuildRenderPassDescriptor: alpha/blend does not by

@@ -12,11 +12,21 @@ namespace Poseidon
 
 // Vertex for 2D quad/poly rendering. Position is already in NDC (-1..1);
 // EngineMTL converts from pixel space before calling DrawTriangles2D. Color
-// is straight (non-premultiplied) alpha, 0..1.
+// is straight (non-premultiplied) alpha, 0..1. fogTC mirrors GL33's
+// vFogTC (EngineGL33_Shaders.cpp's vsScreen: `vFogTC = aSpecular.a`) --
+// the classic D3D vertex-fog convention where the legacy TLVertex's
+// specular.a carries the per-vertex fog blend factor (1 = no fog / use lit
+// color, 0 = fully fogged). Defaults to 1.0 (no-op) for ordinary 2D/UI
+// draws, which have no concept of fog; only the legacy 3D fan-draw path
+// (DrawIndexedFan3D) ever sets a real value, read from the source
+// TLVertex's specular field that this struct previously discarded
+// entirely -- the gap that left legacy-path 3D geometry (e.g.
+// Landscape::DrawHorizont's ClipUser0 fade strip) rendering its raw,
+// never-fogged color instead of blending into the horizon.
 struct Vertex2DMTL
 {
     float x, y, z, w;
-    float u, v, pad0, pad1;
+    float u, v, fogTC, pad1;
     float r, g, b, a;
 };
 
@@ -216,6 +226,10 @@ class EngineMTLBootstrap
     // fan-draw path (DrawIndexedFan3D) passes a real per-section value --
     // see EngineMTLBootstrap.cpp's sampler-state cache for why this matters
     // (tiled textures need wrap/repeat addressing, not clamp).
+    //
+    // `fogColor` feeds fs2d's per-vertex fog blend (mix toward this color by
+    // each vertex's Vertex2DMTL::fogTC) -- always bound, but a no-op for
+    // ordinary 2D/UI draws since their fogTC defaults to 1.0.
     void DrawTriangles2D(const Vertex2DMTL* verts, int vertCount, const uint16_t* indices, int indexCount,
                          int textureHandle, int clipX, int clipY, int clipW, int clipH,
                          bool useDepth = false,
@@ -223,7 +237,8 @@ class EngineMTLBootstrap
                          Poseidon::render::BlendMode blendMode = Poseidon::render::BlendMode::AlphaBlend,
                          Poseidon::render::SamplerMode sampler = {Poseidon::render::SamplerFilter::Linear, true, true},
                          Poseidon::render::SurfaceMode surface = Poseidon::render::SurfaceMode::Default,
-                         Poseidon::render::ShaderFamily shader = Poseidon::render::ShaderFamily::Normal);
+                         Poseidon::render::ShaderFamily shader = Poseidon::render::ShaderFamily::Normal,
+                         const float fogColor[3] = nullptr);
 
     // Ends encoding, presents the drawable, commits the command buffer.
     void EndFrame();

@@ -37,13 +37,15 @@ using namespace metal;
 struct Vertex2D {
     float4 position;
     float2 uv;
-    float2 pad;
+    float fogTC;
+    float pad1;
     float4 color;
 };
 
 struct VSOut {
     float4 position [[position]];
     float2 uv;
+    float fogTC;
     float4 color;
 };
 
@@ -53,14 +55,22 @@ vertex VSOut vs2d(uint vid [[vertex_id]], const device Vertex2D* verts [[buffer(
     VSOut out;
     out.position = v.position;
     out.uv = v.uv;
+    out.fogTC = v.fogTC;
     out.color = v.color;
     return out;
 }
 
-fragment float4 fs2d(VSOut in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler samp [[sampler(0)]])
+// fogTC mirrors GL33's vFogTC (EngineGL33_Shaders.cpp's vsScreen reads it
+// straight from the legacy TLVertex's specular.a) -- 1.0 for ordinary 2D/UI
+// draws (no-op below), a real per-vertex value for the legacy 3D fan-draw
+// path (DrawIndexedFan3D), which otherwise had no fog at all.
+fragment float4 fs2d(VSOut in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler samp [[sampler(0)]],
+                     constant float4& fogColor [[buffer(0)]])
 {
     float4 texColor = tex.sample(samp, in.uv);
-    return texColor * in.color;
+    float4 lit = texColor * in.color;
+    float3 rgb = mix(fogColor.rgb, lit.rgb, saturate(in.fogTC));
+    return float4(rgb, lit.a);
 }
 )";
 
@@ -1094,10 +1104,14 @@ void EngineMTLBootstrap::DrawTriangles2D(const Vertex2DMTL* verts, int vertCount
                                          bool useDepth,
                                          Poseidon::render::DepthMode depthMode, Poseidon::render::BlendMode blendMode,
                                          Poseidon::render::SamplerMode sampler, Poseidon::render::SurfaceMode surface,
-                                         Poseidon::render::ShaderFamily shader)
+                                         Poseidon::render::ShaderFamily shader, const float fogColor[3])
 {
     if (_impl->currentEncoder == nullptr || vertCount <= 0 || indexCount <= 0)
         return;
+
+    const float fogColorBuf[4] = {fogColor ? fogColor[0] : 0.0f, fogColor ? fogColor[1] : 0.0f,
+                                  fogColor ? fogColor[2] : 0.0f, 0.0f};
+    _impl->currentEncoder->setFragmentBytes(fogColorBuf, sizeof(fogColorBuf), 0);
 
     // Explicit rebind, not inherited from BeginFrame's initial bind -- a
     // DrawSectionTL call earlier in this same encoder would otherwise leave
