@@ -426,9 +426,19 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
 // vertices get to the GPU. This was previously the gap that let shadow polys
 // without a hardware vertex buffer (most real casters, see Shadow.cpp's
 // Object::DrawShadow) bypass the TL path's stencil exclusion entirely --
-// PrepareTriangle ignored specFlags outright. Default BuildContext is correct
-// here: this path never multitextures, and PassKindHint isn't set anywhere
-// for it (matches GL33, which also doesn't branch on PassKind directly).
+// PrepareTriangle ignored specFlags outright.
+// TODO(metal-detail-terrain): default BuildContext (isMultitexturing=false)
+// is NOT actually correct here -- PolyProperties::Prepare (DrawPoly.cpp)
+// calls GEngine->PrepareTriangle for terrain faces with DetailTexture/
+// GrassTexture spec bits set (LandscapeRender.cpp). Low priority in
+// practice though: Landscape::DrawGround only falls back to this legacy
+// path (DrawMesh) when ENGINE_CONFIG.enableHWTL/EnableHWTLState is off --
+// both default true, and EngineMTL::GetTL() returns true, so the live
+// default case routes terrain through Shape::Draw -> PrepareTriangleTL
+// instead (see that function's Detail/Grass handling). This path's
+// pipeline is kShaderSource2D/DrawTriangles2D, which has no UV1 attribute
+// or second texture slot at all -- would need its own milestone if the
+// HW-TL-disabled fallback ever needs real parity.
 void EngineMTL::PrepareTriangle(const MipInfo& mip, int specFlags)
 {
     _currentTriTexture = mip.IsOK() ? GpuHandleOf(mip._texture) : 0;
@@ -564,6 +574,8 @@ void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& 
     const bool isAlpha = tex && tex->IsAlpha();
     const bool isCutout = tex && tex->IsTransparent();
     _tlObject.flags[0] = isCutout ? 1.0f : 0.0f;
+    _tlObject.flags[1] = 0.0f;
+    _tlSecondaryTexture = 0;
 
     // Same mapping BuildRenderPassDescriptor.hpp uses for d.sampler -- no
     // competing signal to special-case around here (unlike blend mode's
@@ -574,9 +586,53 @@ void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& 
                                                                     : render::SamplerFilter::Linear;
     _tlSectionSampler.clampU = render::Has(spec.backend, render::Backend::ClampU);
     _tlSectionSampler.clampV = render::Has(spec.backend, render::Backend::ClampV);
-    const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(spec);
+    // GL33's ApplyPassState always passes isIn3DPass=true and
+    // isMultitexturing=IsMultitexturing() for the mesh/TL vertex input (see
+    // EngineGL33_Queue.cpp:248-251) -- the omitted BuildContext here meant
+    // d.shader could never resolve to Detail/Grass even when a section's
+    // spec carried those bits, since the default BuildContext has
+    // isMultitexturing=false.
+    render::BuildContext ctx;
+    ctx.isIn3DPass = true;
+    ctx.isMultitexturing = IsMultitexturing();
+    const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(spec, ctx);
     _tlSectionSurfaceMode = d.surface;
     _tlSectionShader = d.shader;
+    if (d.shader == render::ShaderFamily::Detail)
+    {
+        _tlObject.flags[1] = 1.0f;
+        // d.shader==Detail covers both DetailTexture- and SpecularTexture-
+        // tagged sections (BuildRenderPassDescriptor.hpp's generic mtMask
+        // branch collapses both to Detail when GrassTexture isn't set).
+        // GL33's SetTexture (EngineGL33_State.cpp) re-checks the original
+        // bits to pick which texture actually goes on unit 1 -- water tiles
+        // carry SpecularTexture (LandscapeRender.cpp's WaterFlags), not
+        // DetailTexture, and need the specular/bump texture there, not the
+        // ground detail texture.
+        const bool isDetailTagged = render::Has(spec.backend, render::Backend::DetailTexture);
+        if (_textBank)
+        {
+            TextureMTL* tex = isDetailTagged ? _textBank->GetDetailTexture() : _textBank->GetSpecularTexture();
+            if (tex)
+            {
+                _textBank->UseMipmap(tex, 0, 0);
+                _tlSecondaryTexture = tex->GpuHandle();
+            }
+        }
+    }
+    else if (d.shader == render::ShaderFamily::Grass)
+    {
+        _tlObject.flags[1] = 2.0f;
+        if (_textBank)
+        {
+            TextureMTL* grass = _textBank->GetGrassTexture();
+            if (grass)
+            {
+                _textBank->UseMipmap(grass, 0, 0);
+                _tlSecondaryTexture = grass->GpuHandle();
+            }
+        }
+    }
 
     // Shadow polys (Shadow.cpp's MakeShadow) carry no texture and always
     // resolve to BuildRenderPassDescriptor's isShadow branch
@@ -691,7 +747,7 @@ void EngineMTL::DrawSectionTL(const Shape& sMesh, int beg, int end)
         return;
 
     _bootstrap.DrawSectionTL(buf->VertexBufferHandle(), buf->IndexBufferHandle(), firstIndex, indexCount,
-                             _tlCurrentTexture, _tlObject, _tlFrame, _tlSectionDepthMode, _tlSectionBlendMode,
+                             _tlCurrentTexture, _tlSecondaryTexture, _tlObject, _tlFrame, _tlSectionDepthMode, _tlSectionBlendMode,
                              _tlSectionSampler, _tlSectionSurfaceMode, _tlSectionShader);
 }
 

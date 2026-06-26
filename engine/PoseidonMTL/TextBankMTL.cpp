@@ -1,6 +1,10 @@
 #include <PoseidonMTL/TextBankMTL.hpp>
 
+#include <Poseidon/IO/ParamFile/ParamFile.hpp>
+#include <Poseidon/IO/Streams/QStream.hpp>
 #include <Poseidon/Foundation/Logging/Logging.hpp>
+
+extern ParamFile Remaster;
 
 namespace Poseidon
 {
@@ -39,6 +43,52 @@ Ref<Texture> TextBankMTL::Load(RStringB name)
     int iFree = _texture.Add();
     _texture[iFree] = texture;
     return texture;
+}
+
+void TextBankMTL::InitDetailTextures()
+{
+    if (_detail || _grass || _specular || _waterBump)
+        return;
+
+    const ParamEntry& names = Remaster >> "CfgDetailTextures";
+    auto loadDetail = [this](RStringB name, int maxSize = 4096) -> Ref<TextureMTL> {
+        if (!QIFStreamB::FileExist(name))
+            return nullptr;
+        Ref<Texture> loaded = Load(name);
+        TextureMTL* tex = dynamic_cast<TextureMTL*>(loaded.GetRef());
+        if (tex)
+            tex->SetMaxSize(maxSize);
+        return tex;
+    };
+
+    _detail = loadDetail(names >> "detail");
+    _specular = loadDetail(names >> "specular");
+    _grass = loadDetail(names >> "grass", 1024);
+    _waterBump = loadDetail(names >> "waterBump", 1024);
+}
+
+TextureMTL* TextBankMTL::GetDetailTexture()
+{
+    InitDetailTextures();
+    return _detail;
+}
+
+TextureMTL* TextBankMTL::GetGrassTexture()
+{
+    InitDetailTextures();
+    return _grass;
+}
+
+TextureMTL* TextBankMTL::GetSpecularTexture()
+{
+    InitDetailTextures();
+    return _specular;
+}
+
+TextureMTL* TextBankMTL::GetWaterBumpMap()
+{
+    InitDetailTextures();
+    return _waterBump;
 }
 
 MipInfo TextBankMTL::UseMipmap(Texture* texture, int level, int levelTop)

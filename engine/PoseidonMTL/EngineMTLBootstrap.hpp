@@ -93,6 +93,9 @@ struct ObjectConstantsMTL
     // below it. 0.0 for ordinary opaque textures (no discard at all) and for
     // true Blend textures (those draw with fsMeshBlend instead, see
     // DrawSectionTL's blendEnabled parameter).
+    // y = mesh detail mode: 0 normal, 1 detail, 2 grass. This drives the
+    // secondary texture sample in the fragment shader while Water remains a
+    // later shader-family port.
     float flags[4];
     // Local point/spot lights (street lamps, vehicle headlights) -- ported
     // from GL33's UploadVSLights. Only ever non-empty when the sun's
@@ -329,7 +332,7 @@ class EngineMTLBootstrap
     // hardcoded clamp-to-edge sampler just repeats the texture's edge pixel
     // across the whole surface instead of tiling it.
     void DrawSectionTL(int vertexBufferHandle, int indexBufferHandle, int firstIndex, int indexCount,
-                       int textureHandle, const ObjectConstantsMTL& obj, const FrameConstantsMTL& frame,
+                       int textureHandle, int secondaryTextureHandle, const ObjectConstantsMTL& obj, const FrameConstantsMTL& frame,
                        Poseidon::render::DepthMode depthMode, Poseidon::render::BlendMode blendMode,
                        Poseidon::render::SamplerMode sampler, Poseidon::render::SurfaceMode surface,
                        Poseidon::render::ShaderFamily shader);

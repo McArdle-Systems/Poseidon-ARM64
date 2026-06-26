@@ -144,6 +144,7 @@ static inline float3 mulRowVec3(float3 p, Mat4Rows m)
 struct VSOutMesh {
     float4 position [[position]];
     float2 uv;
+    float2 uv1;
     float4 color;
     // Sun-only specular highlight (ported from GL33's vSpecColor) -- added
     // post-texture-sample in the fragment shaders, unmodulated by texColor
@@ -152,6 +153,7 @@ struct VSOutMesh {
     float4 specColor;
     float fogFactor;
     float isCutout; // obj.flags.x passed through -- see fsMeshOpaque
+    float detailMode; // obj.flags.y: 0 normal, 1 detail, 2 grass
 };
 
 vertex VSOutMesh vsMesh(uint vid [[vertex_id]], const device VertexMesh* verts [[buffer(0)]],
@@ -263,13 +265,33 @@ vertex VSOutMesh vsMesh(uint vid [[vertex_id]], const device VertexMesh* verts [
     VSOutMesh out;
     out.position = clipPos;
     out.uv = v.uv;
+    out.uv1 = obj.flags.y > 0.5 ? v.uv * 32.0 : v.uv;
     out.color = float4(lit, obj.ambient.w);
     out.specColor = float4(clamp(specOut, 0.0, 1.0), 0.0);
     out.fogFactor = fogFactor;
     // obj.flags.x is 1.0 only for AlphaStats::Cutout textures (set by
     // EngineMTL::PrepareTriangleTL) -- see fsMeshOpaque's discard test.
     out.isCutout = obj.flags.x;
+    out.detailMode = obj.flags.y;
     return out;
+}
+
+static inline float4 applyDetailMode(float4 baseTex, float3 baseLit, VSOutMesh in, texture2d<float> detailTex,
+                                     sampler samp)
+{
+    if (in.detailMode > 1.5)
+    {
+        float4 grass = detailTex.sample(samp, in.uv1);
+        float3 rgb = clamp(baseLit * grass.rgb * 2.0, 0.0, 1.0);
+        float a = baseTex.a * grass.a;
+        return float4(rgb, a);
+    }
+    if (in.detailMode > 0.5)
+    {
+        float4 detail = detailTex.sample(samp, in.uv1);
+        return float4(baseLit * (detail.a * 2.0), baseTex.a);
+    }
+    return float4(baseLit, baseTex.a);
 }
 
 // Opaque-pipeline fragment shader (blending disabled at the pipeline level,
@@ -281,14 +303,16 @@ vertex VSOutMesh vsMesh(uint vid [[vertex_id]], const device VertexMesh* verts [
 // (ref = 0xc0/255, same threshold BuildRenderPassDescriptor.hpp uses for
 // AlphaMode::Test on WorldCutout) so fences/foliage punch through cleanly.
 fragment float4 fsMeshOpaque(VSOutMesh in [[stage_in]], constant FrameConstants& frame [[buffer(0)]],
-                             texture2d<float> tex [[texture(0)]], sampler samp [[sampler(0)]])
+                             texture2d<float> tex [[texture(0)]], texture2d<float> detailTex [[texture(1)]],
+                             sampler samp [[sampler(0)]])
 {
     float4 texColor = tex.sample(samp, in.uv);
     if (in.isCutout > 0.5 && texColor.a < (192.0 / 255.0))
         discard_fragment();
     float3 litColor = texColor.rgb * in.color.rgb + in.specColor.rgb;
-    float3 finalColor = mix(litColor, frame.fogColor.rgb, in.fogFactor);
-    return float4(finalColor, in.color.a);
+    float4 detailed = applyDetailMode(texColor, litColor, in, detailTex, samp);
+    float3 finalColor = mix(detailed.rgb, frame.fogColor.rgb, in.fogFactor);
+    return float4(finalColor, in.color.a * detailed.a);
 }
 
 // Blend-pipeline fragment shader (blending enabled, pipelineStateTLBlend) --
@@ -296,12 +320,14 @@ fragment float4 fsMeshOpaque(VSOutMesh in [[stage_in]], constant FrameConstants&
 // real per-pixel data (glass, fences seen through, smoke) and is meant to
 // paint back-to-front over whatever is already in the framebuffer.
 fragment float4 fsMeshBlend(VSOutMesh in [[stage_in]], constant FrameConstants& frame [[buffer(0)]],
-                            texture2d<float> tex [[texture(0)]], sampler samp [[sampler(0)]])
+                            texture2d<float> tex [[texture(0)]], texture2d<float> detailTex [[texture(1)]],
+                            sampler samp [[sampler(0)]])
 {
     float4 texColor = tex.sample(samp, in.uv);
     float3 litColor = texColor.rgb * in.color.rgb + in.specColor.rgb;
-    float3 finalColor = mix(litColor, frame.fogColor.rgb, in.fogFactor);
-    return float4(finalColor, in.color.a * texColor.a);
+    float4 detailed = applyDetailMode(texColor, litColor, in, detailTex, samp);
+    float3 finalColor = mix(detailed.rgb, frame.fogColor.rgb, in.fogFactor);
+    return float4(finalColor, in.color.a * detailed.a);
 }
 
 // Single-pass shadow draw (pipelineStateTLShadow, color writes ON, Shadow
@@ -1223,7 +1249,7 @@ void EngineMTLBootstrap::DestroyMeshBufferDeferred(int handle)
 }
 
 void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHandle, int firstIndex, int indexCount,
-                                       int textureHandle, const ObjectConstantsMTL& obj, const FrameConstantsMTL& frame,
+                                       int textureHandle, int secondaryTextureHandle, const ObjectConstantsMTL& obj, const FrameConstantsMTL& frame,
                                        Poseidon::render::DepthMode depthMode, Poseidon::render::BlendMode blendMode,
                                        Poseidon::render::SamplerMode sampler, Poseidon::render::SurfaceMode surface,
                                        Poseidon::render::ShaderFamily shader)
@@ -1252,6 +1278,13 @@ void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHa
         MTL::Texture* found = _impl->textures[textureHandle - 1];
         if (found != nullptr)
             tex = found;
+    }
+    MTL::Texture* secondaryTex = _impl->fallbackWhite;
+    if (secondaryTextureHandle > 0 && static_cast<size_t>(secondaryTextureHandle) <= _impl->textures.size())
+    {
+        MTL::Texture* found = _impl->textures[secondaryTextureHandle - 1];
+        if (found != nullptr)
+            secondaryTex = found;
     }
 
     // Explicit rebind -- see DrawTriangles2D's matching comment: draw order
@@ -1316,6 +1349,7 @@ void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHa
     _impl->currentEncoder->setVertexBytes(&frame, sizeof(frame), 2);
     _impl->currentEncoder->setFragmentBytes(&frame, sizeof(frame), 0);
     _impl->currentEncoder->setFragmentTexture(tex, 0);
+    _impl->currentEncoder->setFragmentTexture(secondaryTex, 1);
 
     const NS::UInteger offsetBytes = static_cast<NS::UInteger>(firstIndex) * sizeof(uint16_t);
     _impl->currentEncoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, static_cast<NS::UInteger>(indexCount),

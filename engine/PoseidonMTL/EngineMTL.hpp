@@ -215,6 +215,7 @@ class EngineMTL : public Engine
     FrameConstantsMTL _tlFrame = {};
     ObjectConstantsMTL _tlObject = {};
     int _tlCurrentTexture = 0;
+    int _tlSecondaryTexture = 0;
     // Set alongside _tlObject by PrepareTriangleTL from
     // render::BuildRenderPassDescriptor(spec)'s depth/blend fields -- the
     // single source of truth for what state a section's spec bits resolve

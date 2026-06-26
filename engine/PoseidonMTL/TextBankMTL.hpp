@@ -23,6 +23,11 @@ class TextBankMTL : public AbstractTextBank
     Ref<Texture> Load(RStringB name) override;
     Ref<Texture> LoadInterpolated(RStringB /*n1*/, RStringB /*n2*/, float /*factor*/) override { return nullptr; }
     MipInfo UseMipmap(Texture* texture, int level, int levelTop) override;
+    void InitDetailTextures();
+    TextureMTL* GetDetailTexture();
+    TextureMTL* GetGrassTexture();
+    TextureMTL* GetSpecularTexture();
+    TextureMTL* GetWaterBumpMap();
 
     // Font-atlas pages etc. -- AbstractTextBank's default returns nullptr,
     // which silently dropped every FreeType glyph-atlas upload under this
@@ -44,6 +49,10 @@ class TextBankMTL : public AbstractTextBank
   private:
     EngineMTLBootstrap* _bootstrap;
     LLinkArray<TextureMTL> _texture;
+    Ref<TextureMTL> _detail;
+    Ref<TextureMTL> _specular;
+    Ref<TextureMTL> _grass;
+    Ref<TextureMTL> _waterBump;
 };
 
 } // namespace Poseidon
