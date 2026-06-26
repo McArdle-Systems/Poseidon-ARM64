@@ -13,6 +13,24 @@
 
 namespace Poseidon
 {
+namespace
+{
+
+AlphaStats::Kind ClassifyMetalAlpha(const AlphaStats& decoded)
+{
+    // Many OFP-era vehicle/cutout textures have hard transparent holes plus
+    // a small band of antialias/compression alpha around the edge. Treating
+    // any modest partial-alpha population as true translucent Blend makes
+    // those panels paint over already-drawn interior geometry instead of
+    // occluding it. Keep genuinely partial surfaces (glass/smoke/fades) in
+    // Blend, but route hole-heavy textures with limited partial edge pixels
+    // through the cutout path.
+    if (decoded.pctClear >= 2.0 && decoded.pctPartial < 20.0)
+        return AlphaStats::Cutout;
+    return decoded.kind;
+}
+
+} // namespace
 
 bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
 {
@@ -66,6 +84,7 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
     if (chain.hasAlphaChannel && !chain.oneBitAlpha)
     {
         decoded = ClassifyAlpha(top.rgba.data(), static_cast<size_t>(_w) * static_cast<size_t>(_h));
+        decoded.kind = ClassifyMetalAlpha(decoded);
         decodedPtr = &decoded;
     }
     const AlphaStats::Kind kind =
