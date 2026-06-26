@@ -208,7 +208,8 @@ vertex VSOutMesh vsMesh(uint vid [[vertex_id]], const device VertexMesh* verts [
     // under GL33). Only the literal per-vertex NdotL falloff depends on the
     // sun direction actually being meaningful, which sunEnabled still guards.
     float sunEnabled = frame.sunDirAndEnabled.w;
-    float NdotL = max(dot(worldNorm, frame.sunDirAndEnabled.xyz), 0.0) * sunEnabled;
+    float3 toSun = -frame.sunDirAndEnabled.xyz;
+    float NdotL = max(dot(worldNorm, toSun), 0.0) * sunEnabled;
     float3 lit = obj.ambient.rgb + NdotL * obj.diffuse.rgb + obj.emissive.rgb;
 
     // Local point/spot lights (street lamps, vehicle headlights) -- ported
@@ -268,14 +269,13 @@ vertex VSOutMesh vsMesh(uint vid [[vertex_id]], const device VertexMesh* verts [
     // camera-relative worldPos4 -- ported as-is from GL33's own formula
     // (EngineGL33_Shaders.cpp), see FrameConstantsMTL::camPosWorld's doc
     // comment for why this looks dimensionally odd but is intentional
-    // parity, not a bug introduced here. frame.sunDirAndEnabled.xyz is
-    // already the "-sunDir" GL33 uses for its own NdotL (confirmed by the
-    // unnegated NdotL line above), so no extra negation here either.
+    // parity, not a bug introduced here. GL33 uploads sun->Direction() and
+    // negates it in the shader for both NdotL and the half-vector.
     float3 specOut = float3(0.0);
     if (obj.specEnabled.x > 0.5 && sunEnabled > 0.0)
     {
         float3 viewDir = normalize(frame.camPosWorld.xyz - worldPos4.xyz);
-        float3 halfVec = normalize(frame.sunDirAndEnabled.xyz + viewDir);
+        float3 halfVec = normalize(toSun + viewDir);
         float NdotH = max(dot(worldNorm, halfVec), 0.0);
         float specPow = max(1.0, obj.specular.w);
         specOut = obj.specular.rgb * pow(NdotH, specPow) * sunEnabled;
