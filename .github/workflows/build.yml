@@ -80,10 +80,13 @@ jobs:
             automake \
             ca-certificates \
             clang \
+            curl \
             libtool \
             make \
             perl \
             pkg-config \
+            tar \
+            zip \
             libgl1-mesa-dev \
             libx11-dev \
             libxext-dev \
