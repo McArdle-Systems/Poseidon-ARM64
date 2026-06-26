@@ -6,6 +6,7 @@
 #include <Poseidon/Graphics/Textures/PAADecoder.hpp>
 #include <Poseidon/Foundation/Logging/Logging.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -45,6 +46,12 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
     _w = top.width;
     _h = top.height;
     _nMipmaps = static_cast<int>(chain.levels.size());
+    _largestUsed = 0;
+    _levelNeededThisFrame = _levelNeededLastFrame = _nMipmaps;
+    _levels.clear();
+    _levels.reserve(chain.levels.size());
+    for (const DecodedImage& level : chain.levels)
+        _levels.push_back({level.width, level.height});
 
     // Same tiering TextureGL33::GetAlphaClass() uses (ClassifyTextureAlpha's
     // documented policy): only decode-scan the alpha channel when the
@@ -97,6 +104,11 @@ bool TextureMTL::InitFromRGBA(EngineMTLBootstrap& bootstrap, int w, int h, const
 
     _w = w;
     _h = h;
+    _nMipmaps = 1;
+    _largestUsed = 0;
+    _levelNeededThisFrame = _levelNeededLastFrame = _nMipmaps;
+    _levels.clear();
+    _levels.push_back({w, h});
     _gpuHandle = bootstrap.CreateTexture(w, h, static_cast<const uint8_t*>(rgba));
     if (_gpuHandle == 0)
         return false;
@@ -112,6 +124,90 @@ void TextureMTL::UpdateRGBA(EngineMTLBootstrap& bootstrap, const void* rgba)
     bootstrap.UpdateTexture(_gpuHandle, _w, _h, static_cast<const uint8_t*>(rgba));
     const auto* bytes = static_cast<const uint8_t*>(rgba);
     _rgba.assign(bytes, bytes + static_cast<size_t>(_w) * static_cast<size_t>(_h) * 4);
+}
+
+int TextureMTL::LevelWidth(int level) const
+{
+    if (!_levels.empty())
+    {
+        level = std::clamp(level, 0, static_cast<int>(_levels.size()) - 1);
+        return _levels[static_cast<size_t>(level)].width;
+    }
+    level = std::max(level, 0);
+    return std::max(1, _w >> level);
+}
+
+int TextureMTL::LevelHeight(int level) const
+{
+    if (!_levels.empty())
+    {
+        level = std::clamp(level, 0, static_cast<int>(_levels.size()) - 1);
+        return _levels[static_cast<size_t>(level)].height;
+    }
+    level = std::max(level, 0);
+    return std::max(1, _h >> level);
+}
+
+int TextureMTL::AWidth(int level) const
+{
+    return LevelWidth(level);
+}
+
+int TextureMTL::AHeight(int level) const
+{
+    return LevelHeight(level);
+}
+
+void TextureMTL::SetMipmapRange(int min, int max)
+{
+    const int available = _levels.empty() ? std::max(_nMipmaps, 1) : static_cast<int>(_levels.size());
+    if (available <= 0)
+    {
+        _nMipmaps = 0;
+        _largestUsed = 0;
+        return;
+    }
+
+    min = std::clamp(min, 0, available - 1);
+    max = std::clamp(max, 0, available - 1);
+    if (min > max)
+        min = max;
+    _largestUsed = min;
+    _nMipmaps = max + 1;
+}
+
+int TextureMTL::NoteMipmapUse(int level, int levelTop)
+{
+    if (_nMipmaps <= 0)
+        return -1;
+
+    if (level < 0)
+        level = 0;
+    level = std::min(level, _nMipmaps - 1);
+    levelTop = std::max(levelTop, _largestUsed);
+    levelTop = std::min(levelTop, level);
+    level = std::max(level, levelTop);
+
+    level = std::min(level, _mipmapNeeded);
+    levelTop = std::min(levelTop, _mipmapWanted);
+    if (level < 0)
+        level = 0;
+    level = std::min(level, _nMipmaps - 1);
+    levelTop = std::max(levelTop, _largestUsed);
+    levelTop = std::min(levelTop, level);
+    level = std::max(level, levelTop);
+
+    if (_levelNeededThisFrame > level)
+        _levelNeededThisFrame = level;
+
+    return level;
+}
+
+void TextureMTL::FinishFrameUseTracking()
+{
+    _levelNeededLastFrame = _levelNeededThisFrame;
+    _levelNeededThisFrame = _nMipmaps;
+    ResetMipmap();
 }
 
 Color TextureMTL::GetPixel(int /*level*/, float u, float v) const

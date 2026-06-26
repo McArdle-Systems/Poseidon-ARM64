@@ -41,6 +41,16 @@ Ref<Texture> TextBankMTL::Load(RStringB name)
     return texture;
 }
 
+MipInfo TextBankMTL::UseMipmap(Texture* texture, int level, int levelTop)
+{
+    if (texture == nullptr)
+        return MipInfo(nullptr, 0);
+
+    TextureMTL* mtlTexture = static_cast<TextureMTL*>(texture);
+    const int selectedLevel = mtlTexture->NoteMipmapUse(level, levelTop);
+    return MipInfo(texture, selectedLevel);
+}
+
 Texture* TextBankMTL::CreateDynamic(int w, int h, const void* rgba, uint32_t /*size*/, bool /*mipmap*/)
 {
     // No mip-chain support (TextureMTL is single-mip by design); `mipmap` is
@@ -64,6 +74,16 @@ void TextBankMTL::UpdateDynamic(Texture* texture, const void* rgba, uint32_t /*s
     if (texture == nullptr)
         return;
     static_cast<TextureMTL*>(texture)->UpdateRGBA(*_bootstrap, rgba);
+}
+
+void TextBankMTL::FinishFrame()
+{
+    for (int i = 0; i < _texture.Size(); i++)
+    {
+        TextureMTL* texture = _texture[i];
+        if (texture)
+            texture->FinishFrameUseTracking();
+    }
 }
 
 } // namespace Poseidon

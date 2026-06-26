@@ -3,6 +3,7 @@
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
 #include <Poseidon/Foundation/Types/LLinks.hpp>
 
+#include <climits>
 #include <cstdint>
 #include <vector>
 
@@ -46,15 +47,16 @@ class TextureMTL : public Texture
 
     bool IsGpuValid() const override { return _gpuHandle != 0; }
 
-    void SetMaxSize(int /*maxSize*/) override {}
-    int AMaxSize() const override { return 4096; }
+    void SetMaxSize(int maxSize) override { _maxSize = maxSize; }
+    int AMaxSize() const override { return _maxSize; }
 
-    int AWidth(int /*level*/ = 0) const override { return _w; }
-    int AHeight(int /*level*/ = 0) const override { return _h; }
+    int AWidth(int level = 0) const override;
+    int AHeight(int level = 0) const override;
     int ANMipmaps() const override { return _nMipmaps; }
     void ASetNMipmaps(int /*n*/) override {}
     AbstractMipmapLevel& AMipmap(int /*level*/) override { return _mip; }
     const AbstractMipmapLevel& AMipmap(int /*level*/) const override { return _mip; }
+    void SetMipmapRange(int min, int max) override;
 
     // Not sampled from the GPU texture (Metal has no CPU readback path
     // wired up here) -- reads the CPU-side RGBA copy `_rgba` kept
@@ -78,13 +80,30 @@ class TextureMTL : public Texture
 
     bool VerifyChecksum(const MipInfo& /*mip*/) const override { return true; }
 
+    int NoteMipmapUse(int level, int levelTop);
+    void FinishFrameUseTracking();
+
   private:
+    struct LevelInfo
+    {
+        int width = 0;
+        int height = 0;
+    };
+
+    int LevelWidth(int level) const;
+    int LevelHeight(int level) const;
+
     int _w = 0, _h = 0;
     int _gpuHandle = 0; // EngineMTLBootstrap texture handle; 0 = none/failed (renders fallback white)
     int _nMipmaps = 1;  // real decoded level count for LoadPixels; always 1 for InitFromRGBA (dynamic/UI textures)
+    int _maxSize = 4096;
+    int _largestUsed = 0;
+    int _levelNeededThisFrame = INT_MAX;
+    int _levelNeededLastFrame = INT_MAX;
     bool _isAlpha = false;
     bool _isTransparent = false;
     PacLevelMem _mip; // unused placeholder -- AMipmap() must return a reference to something
+    std::vector<LevelInfo> _levels;
     std::vector<uint8_t> _rgba; // CPU-side copy of the uploaded RGBA8 data, kept only for GetPixel/GetColor
 };
 

@@ -22,7 +22,7 @@ class TextBankMTL : public AbstractTextBank
 
     Ref<Texture> Load(RStringB name) override;
     Ref<Texture> LoadInterpolated(RStringB /*n1*/, RStringB /*n2*/, float /*factor*/) override { return nullptr; }
-    MipInfo UseMipmap(Texture* texture, int level, int /*levelTop*/) override { return MipInfo(texture, level); }
+    MipInfo UseMipmap(Texture* texture, int level, int levelTop) override;
 
     // Font-atlas pages etc. -- AbstractTextBank's default returns nullptr,
     // which silently dropped every FreeType glyph-atlas upload under this
@@ -36,6 +36,7 @@ class TextBankMTL : public AbstractTextBank
     void FlushTextures() override {}
     void FlushBank(QFBank* /*bank*/) override {}
     void ReleaseAllTextures() override { _texture.Clear(); }
+    void FinishFrame() override;
 
     int NTextures() const override { return _texture.Size(); }
     Texture* GetTexture(int i) const override { return _texture[i]; }
