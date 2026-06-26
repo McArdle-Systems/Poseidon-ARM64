@@ -209,11 +209,11 @@ void EngineMTL::PixelToNDC(float px, float py, float& ndcX, float& ndcY) const
     ndcY = _h > 0 ? 1.0f - (py / static_cast<float>(_h)) * 2.0f : 0.0f;
 }
 
-void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* rhw, const float* uv,
-                          const PackedColor* colors, int n, int textureHandle,
+void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* rhw, const float* uv, const float* uv1,
+                          const PackedColor* colors, int n, int textureHandle, int secondaryTextureHandle,
                           const Rect2DAbs& clip, render::DepthMode depthMode, render::BlendMode blendMode,
                           render::SamplerMode sampler, render::SurfaceMode surface, render::ShaderFamily shader,
-                          const PackedColor* specular)
+                          const PackedColor* specular, float detailMode)
 {
     if (n < 3 || n > kMaxPolyVerts)
         return;
@@ -233,11 +233,15 @@ void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* rhw, con
         verts[i].v = uv[i * 2 + 1];
         // GL33's vsScreen: `vFogTC = aSpecular.a` -- same convention here.
         verts[i].fogTC = specular ? (specular[i].A8() / 255.0f) : 1.0f;
-        verts[i].pad1 = 0.0f;
+        verts[i].detailMode = detailMode;
         verts[i].r = colors[i].R8() / 255.0f;
         verts[i].g = colors[i].G8() / 255.0f;
         verts[i].b = colors[i].B8() / 255.0f;
         verts[i].a = colors[i].A8() / 255.0f;
+        verts[i].u1 = uv1 ? uv1[i * 2] : verts[i].u;
+        verts[i].v1 = uv1 ? uv1[i * 2 + 1] : verts[i].v;
+        verts[i].pad0 = 0.0f;
+        verts[i].pad1 = 0.0f;
     }
 
     uint16_t indices[(kMaxPolyVerts - 2) * 3];
@@ -250,7 +254,8 @@ void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* rhw, con
     }
 
     const float fogColor[3] = {_fogColor.R(), _fogColor.G(), _fogColor.B()};
-    _bootstrap.DrawTriangles2D(verts, n, indices, idxCount, textureHandle, static_cast<int>(clip.x),
+    _bootstrap.DrawTriangles2D(verts, n, indices, idxCount, textureHandle, secondaryTextureHandle,
+                               static_cast<int>(clip.x),
                                static_cast<int>(clip.y), static_cast<int>(clip.w), static_cast<int>(clip.h),
                                z != nullptr, depthMode, blendMode, sampler, surface, shader, fogColor);
 }
@@ -270,8 +275,8 @@ void EngineMTL::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect
     const PackedColor colors[4] = {pars.colorTL, pars.colorTR, pars.colorBR, pars.colorBL};
 
     const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(pars.spec));
-    DrawFan2D(xy, nullptr, nullptr, uv, colors, 4, GpuHandleOf(pars.mip._texture), clip, d.depth, d.blend, d.sampler,
-              d.surface, d.shader);
+    DrawFan2D(xy, nullptr, nullptr, uv, nullptr, colors, 4, GpuHandleOf(pars.mip._texture), 0, clip, d.depth, d.blend,
+              d.sampler, d.surface, d.shader);
 }
 
 void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& clip,
@@ -293,8 +298,8 @@ void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n,
     }
 
     const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(specFlags));
-    DrawFan2D(xy, nullptr, nullptr, uv, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, clip, d.depth, d.blend,
-              d.sampler, d.surface, d.shader);
+    DrawFan2D(xy, nullptr, nullptr, uv, nullptr, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, 0, clip,
+              d.depth, d.blend, d.sampler, d.surface, d.shader);
 }
 
 void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& clip,
@@ -321,7 +326,7 @@ void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int 
     Rect2DAbs clipAbs;
     Convert(clipAbs, clip);
     const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(specFlags));
-    DrawFan2D(xy, nullptr, nullptr, uv, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, clipAbs, d.depth,
+    DrawFan2D(xy, nullptr, nullptr, uv, nullptr, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, 0, clipAbs, d.depth,
               d.blend, d.sampler, d.surface, d.shader);
 }
 
@@ -369,8 +374,8 @@ void EngineMTL::DrawDecal(Vector3Par screen, float /*rhw*/, float sizeX, float s
     const Rect2DAbs clip(0, 0, static_cast<float>(_w), static_cast<float>(_h));
 
     const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(specFlags));
-    DrawFan2D(xy, nullptr, nullptr, uv, colors, 4, GpuHandleOf(mip._texture), clip, d.depth, d.blend, d.sampler, d.surface,
-              d.shader);
+    DrawFan2D(xy, nullptr, nullptr, uv, nullptr, colors, 4, GpuHandleOf(mip._texture), 0, clip, d.depth, d.blend,
+              d.sampler, d.surface, d.shader);
 }
 
 void EngineMTL::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, const Rect2DAbs& clip)
@@ -393,7 +398,7 @@ void EngineMTL::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, 
     const float uv[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     const PackedColor colors[4] = {c0, c0, c1, c1};
 
-    DrawFan2D(xy, nullptr, nullptr, uv, colors, 4, 0, clip);
+    DrawFan2D(xy, nullptr, nullptr, uv, nullptr, colors, 4, 0, 0, clip);
 }
 
 void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
@@ -405,6 +410,7 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
     float z[kMaxPolyVerts];
     float rhw[kMaxPolyVerts];
     float uv[kMaxPolyVerts * 2];
+    float uv1[kMaxPolyVerts * 2];
     PackedColor colors[kMaxPolyVerts];
     PackedColor specular[kMaxPolyVerts];
     for (int k = 0; k < n; k++)
@@ -416,13 +422,16 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
         rhw[k] = v.rhw;
         uv[k * 2] = v.t0.u;
         uv[k * 2 + 1] = v.t0.v;
+        uv1[k * 2] = v.t1.u;
+        uv1[k * 2 + 1] = v.t1.v;
         colors[k] = v.color;
         specular[k] = v.specular;
     }
 
     const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
-    DrawFan2D(xy, z, rhw, uv, colors, n, _currentTriTexture, fullScreen, _currentTriDepthMode, _currentTriBlendMode,
-              _currentTriSampler, _currentTriSurfaceMode, _currentTriShader, specular);
+    DrawFan2D(xy, z, rhw, uv, uv1, colors, n, _currentTriTexture, _currentTriSecondaryTexture, fullScreen,
+              _currentTriDepthMode, _currentTriBlendMode, _currentTriSampler, _currentTriSurfaceMode,
+              _currentTriShader, specular, _currentTriDetailMode);
 }
 
 // GL33's equivalent is the legacy/queued path's FlushQueue -> ApplyPassState
@@ -433,27 +442,47 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
 // without a hardware vertex buffer (most real casters, see Shadow.cpp's
 // Object::DrawShadow) bypass the TL path's stencil exclusion entirely --
 // PrepareTriangle ignored specFlags outright.
-// TODO(metal-detail-terrain): default BuildContext (isMultitexturing=false)
-// is NOT actually correct here -- PolyProperties::Prepare (DrawPoly.cpp)
-// calls GEngine->PrepareTriangle for terrain faces with DetailTexture/
-// GrassTexture spec bits set (LandscapeRender.cpp). Low priority in
-// practice though: Landscape::DrawGround only falls back to this legacy
-// path (DrawMesh) when ENGINE_CONFIG.enableHWTL/EnableHWTLState is off --
-// both default true, and EngineMTL::GetTL() returns true, so the live
-// default case routes terrain through Shape::Draw -> PrepareTriangleTL
-// instead (see that function's Detail/Grass handling). This path's
-// pipeline is kShaderSource2D/DrawTriangles2D, which has no UV1 attribute
-// or second texture slot at all -- would need its own milestone if the
-// HW-TL-disabled fallback ever needs real parity.
 void EngineMTL::PrepareTriangle(const MipInfo& mip, int specFlags)
 {
     _currentTriTexture = mip.IsOK() ? GpuHandleOf(mip._texture) : 0;
-    const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(specFlags));
+    _currentTriSecondaryTexture = 0;
+    _currentTriDetailMode = 0.0f;
+
+    const render::LegacySpec spec = render::SplitLegacy(specFlags);
+    render::BuildContext ctx;
+    ctx.isIn3DPass = false;
+    ctx.isMultitexturing = IsMultitexturing();
+    const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(spec, ctx);
     _currentTriDepthMode = d.depth;
     _currentTriBlendMode = d.blend;
     _currentTriSampler = d.sampler;
     _currentTriSurfaceMode = d.surface;
     _currentTriShader = d.shader;
+
+    if (d.shader == render::ShaderFamily::Detail || d.shader == render::ShaderFamily::Grass)
+    {
+        const bool isGrassTagged = render::Has(spec.backend, render::Backend::GrassTexture);
+        const bool isDetailTagged = render::Has(spec.backend, render::Backend::DetailTexture);
+        TextureMTL* secondary = nullptr;
+        if (_textBank)
+        {
+            if (isGrassTagged)
+                secondary = _textBank->GetGrassTexture();
+            else if (isDetailTagged)
+                secondary = _textBank->GetDetailTexture();
+            else
+                secondary = _textBank->GetSpecularTexture();
+            if (secondary)
+            {
+                _textBank->UseMipmap(secondary, 0, 0);
+                _currentTriSecondaryTexture = secondary->GpuHandle();
+            }
+        }
+        if (isGrassTagged)
+            _currentTriDetailMode = 2.0f;
+        else if (isDetailTagged)
+            _currentTriDetailMode = 1.0f;
+    }
 }
 
 VertexBuffer* EngineMTL::CreateVertexBuffer(const Shape& src, VBType type)
@@ -820,7 +849,7 @@ void EngineMTL::DrawLine(int beg, int end)
     const PackedColor colors[4] = {v0.color, v0.color, v1.color, v1.color};
 
     const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
-    DrawFan2D(xy, z, rhw, uv, colors, 4, 0, fullScreen);
+    DrawFan2D(xy, z, rhw, uv, nullptr, colors, 4, 0, 0, fullScreen);
 }
 
 bool EngineMTL::SwitchRes(int w, int h, int bpp)

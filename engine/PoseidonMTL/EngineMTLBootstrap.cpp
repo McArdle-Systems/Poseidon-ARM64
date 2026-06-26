@@ -38,14 +38,18 @@ struct Vertex2D {
     float4 position;
     float2 uv;
     float fogTC;
-    float pad1;
+    float detailMode;
     float4 color;
+    float2 uv1;
+    float2 pad0;
 };
 
 struct VSOut {
     float4 position [[position]];
     float2 uv;
+    float2 uv1;
     float fogTC;
+    float detailMode;
     float4 color;
 };
 
@@ -55,7 +59,9 @@ vertex VSOut vs2d(uint vid [[vertex_id]], const device Vertex2D* verts [[buffer(
     VSOut out;
     out.position = v.position;
     out.uv = v.uv;
+    out.uv1 = v.uv1;
     out.fogTC = v.fogTC;
+    out.detailMode = v.detailMode;
     out.color = v.color;
     return out;
 }
@@ -64,11 +70,24 @@ vertex VSOut vs2d(uint vid [[vertex_id]], const device Vertex2D* verts [[buffer(
 // straight from the legacy TLVertex's specular.a) -- 1.0 for ordinary 2D/UI
 // draws (no-op below), a real per-vertex value for the legacy 3D fan-draw
 // path (DrawIndexedFan3D), which otherwise had no fog at all.
-fragment float4 fs2d(VSOut in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler samp [[sampler(0)]],
+fragment float4 fs2d(VSOut in [[stage_in]], texture2d<float> tex [[texture(0)]],
+                     texture2d<float> detailTex [[texture(1)]], sampler samp [[sampler(0)]],
+                     sampler detailSamp [[sampler(1)]],
                      constant float4& fogColor [[buffer(0)]])
 {
     float4 texColor = tex.sample(samp, in.uv);
     float4 lit = texColor * in.color;
+    if (in.detailMode > 1.5)
+    {
+        float4 grass = detailTex.sample(detailSamp, in.uv1);
+        lit.rgb = clamp(lit.rgb * grass.rgb * 2.0, 0.0, 1.0);
+        lit.a *= grass.a;
+    }
+    else if (in.detailMode > 0.5)
+    {
+        float4 detail = detailTex.sample(detailSamp, in.uv1);
+        lit.rgb *= detail.a * 2.0;
+    }
     float3 rgb = mix(fogColor.rgb, lit.rgb, saturate(in.fogTC));
     return float4(rgb, lit.a);
 }
@@ -287,18 +306,18 @@ vertex VSOutMesh vsMesh(uint vid [[vertex_id]], const device VertexMesh* verts [
 }
 
 static inline float4 applyDetailMode(float4 baseTex, float3 baseLit, VSOutMesh in, texture2d<float> detailTex,
-                                     sampler samp)
+                                     sampler detailSamp)
 {
     if (in.detailMode > 1.5)
     {
-        float4 grass = detailTex.sample(samp, in.uv1);
+        float4 grass = detailTex.sample(detailSamp, in.uv1);
         float3 rgb = clamp(baseLit * grass.rgb * 2.0, 0.0, 1.0);
         float a = baseTex.a * grass.a;
         return float4(rgb, a);
     }
     if (in.detailMode > 0.5)
     {
-        float4 detail = detailTex.sample(samp, in.uv1);
+        float4 detail = detailTex.sample(detailSamp, in.uv1);
         return float4(baseLit * (detail.a * 2.0), baseTex.a);
     }
     return float4(baseLit, baseTex.a);
@@ -314,13 +333,13 @@ static inline float4 applyDetailMode(float4 baseTex, float3 baseLit, VSOutMesh i
 // AlphaMode::Test on WorldCutout) so fences/foliage punch through cleanly.
 fragment float4 fsMeshOpaque(VSOutMesh in [[stage_in]], constant FrameConstants& frame [[buffer(0)]],
                              texture2d<float> tex [[texture(0)]], texture2d<float> detailTex [[texture(1)]],
-                             sampler samp [[sampler(0)]])
+                             sampler samp [[sampler(0)]], sampler detailSamp [[sampler(1)]])
 {
     float4 texColor = tex.sample(samp, in.uv);
     if (in.isCutout > 0.5 && texColor.a < (192.0 / 255.0))
         discard_fragment();
     float3 litColor = texColor.rgb * in.color.rgb + in.specColor.rgb;
-    float4 detailed = applyDetailMode(texColor, litColor, in, detailTex, samp);
+    float4 detailed = applyDetailMode(texColor, litColor, in, detailTex, detailSamp);
     float3 finalColor = mix(detailed.rgb, frame.fogColor.rgb, in.fogFactor);
     return float4(finalColor, in.color.a * detailed.a);
 }
@@ -331,11 +350,11 @@ fragment float4 fsMeshOpaque(VSOutMesh in [[stage_in]], constant FrameConstants&
 // paint back-to-front over whatever is already in the framebuffer.
 fragment float4 fsMeshBlend(VSOutMesh in [[stage_in]], constant FrameConstants& frame [[buffer(0)]],
                             texture2d<float> tex [[texture(0)]], texture2d<float> detailTex [[texture(1)]],
-                            sampler samp [[sampler(0)]])
+                            sampler samp [[sampler(0)]], sampler detailSamp [[sampler(1)]])
 {
     float4 texColor = tex.sample(samp, in.uv);
     float3 litColor = texColor.rgb * in.color.rgb + in.specColor.rgb;
-    float4 detailed = applyDetailMode(texColor, litColor, in, detailTex, samp);
+    float4 detailed = applyDetailMode(texColor, litColor, in, detailTex, detailSamp);
     float3 finalColor = mix(detailed.rgb, frame.fogColor.rgb, in.fogFactor);
     return float4(finalColor, in.color.a * detailed.a);
 }
@@ -1100,7 +1119,8 @@ bool EngineMTLBootstrap::BeginFrame(float r, float g, float b, float a, bool cle
 }
 
 void EngineMTLBootstrap::DrawTriangles2D(const Vertex2DMTL* verts, int vertCount, const uint16_t* indices,
-                                         int indexCount, int textureHandle, int clipX, int clipY, int clipW, int clipH,
+                                         int indexCount, int textureHandle, int secondaryTextureHandle,
+                                         int clipX, int clipY, int clipW, int clipH,
                                          bool useDepth,
                                          Poseidon::render::DepthMode depthMode, Poseidon::render::BlendMode blendMode,
                                          Poseidon::render::SamplerMode sampler, Poseidon::render::SurfaceMode surface,
@@ -1140,6 +1160,10 @@ void EngineMTLBootstrap::DrawTriangles2D(const Vertex2DMTL* verts, int vertCount
     }
     _impl->currentEncoder->setDepthStencilState(depthState);
     _impl->currentEncoder->setFragmentSamplerState(_impl->samplerStates[SamplerIndex(sampler)], 0);
+    // Detail/grass texture coordinates repeat far beyond 0..1 (legacy t1 is
+    // uv*32, matching GL33's screen path), so slot 1 must stay wrap even when
+    // the base terrain tile asks slot 0 to clamp at an island/segment edge.
+    _impl->currentEncoder->setFragmentSamplerState(_impl->samplerStates[0], 1);
     SetDepthBiasForDescriptor(_impl->currentEncoder, surface, isShadow ? Poseidon::render::ShaderFamily::Shadow
                                                                        : shader);
 
@@ -1175,9 +1199,17 @@ void EngineMTLBootstrap::DrawTriangles2D(const Vertex2DMTL* verts, int vertCount
         if (found != nullptr)
             tex = found;
     }
+    MTL::Texture* secondaryTex = _impl->fallbackWhite;
+    if (secondaryTextureHandle > 0 && static_cast<size_t>(secondaryTextureHandle) <= _impl->textures.size())
+    {
+        MTL::Texture* found = _impl->textures[secondaryTextureHandle - 1];
+        if (found != nullptr)
+            secondaryTex = found;
+    }
 
     _impl->currentEncoder->setVertexBuffer(vbuf, 0, 0);
     _impl->currentEncoder->setFragmentTexture(tex, 0);
+    _impl->currentEncoder->setFragmentTexture(secondaryTex, 1);
     _impl->currentEncoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, static_cast<NS::UInteger>(indexCount),
                                                  MTL::IndexTypeUInt16, ibuf, 0);
 
@@ -1353,6 +1385,8 @@ void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHa
         depthState = _impl->depthStateDisabled;
     _impl->currentEncoder->setDepthStencilState(depthState);
     _impl->currentEncoder->setFragmentSamplerState(_impl->samplerStates[SamplerIndex(sampler)], 0);
+    // Secondary detail/grass UVs repeat independently of the base texture.
+    _impl->currentEncoder->setFragmentSamplerState(_impl->samplerStates[0], 1);
     SetDepthBiasForDescriptor(_impl->currentEncoder, surface, shader);
     // Metal's cull mode defaults to None (draw both faces) and was never set
     // anywhere in this backend -- meshes with closed/solid hulls (e.g. the

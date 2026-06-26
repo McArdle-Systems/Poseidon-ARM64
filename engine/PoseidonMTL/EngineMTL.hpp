@@ -189,6 +189,7 @@ class EngineMTL : public Engine
     // DrawPolygon/DrawSection to resolve each fan's vertices/texture.
     TLVertexTable* _mesh = nullptr;
     int _currentTriTexture = 0;
+    int _currentTriSecondaryTexture = 0;
     // Set by PrepareTriangle from render::BuildRenderPassDescriptor(spec)'s
     // depth/blend fields, same role _tlSectionDepthMode/_tlSectionBlendMode
     // play for the hardware-TL path -- threaded through DrawIndexedFan3D to
@@ -206,6 +207,10 @@ class EngineMTL : public Engine
     // exact mapping) -- defaults to Linear+ClampToEdge, this path's existing
     // behavior, for ordinary 2D/UI callers that never set it.
     render::SamplerMode _currentTriSampler = {render::SamplerFilter::Linear, true, true};
+    // Legacy/screen-path analogue of _tlObject.flags.y: 0 normal, 1 detail,
+    // 2 grass. Set by PrepareTriangle from the original spec bits and carried
+    // per-vertex so DrawTriangles2D can share one shader for UI and legacy 3D.
+    float _currentTriDetailMode = 0.0f;
 
     // Hardware T&L mesh path state. `_tlFrame`/`_tlObject` are rebuilt on
     // every PrepareMeshTL call (v1 simplicity -- GL33 caches its equivalent
@@ -258,14 +263,14 @@ class EngineMTL : public Engine
     {
         kMaxPolyVerts = 32
     };
-    void DrawFan2D(const float* xy, const float* z, const float* rhw, const float* uv, const PackedColor* colors, int n,
-                   int textureHandle,
+    void DrawFan2D(const float* xy, const float* z, const float* rhw, const float* uv, const float* uv1,
+                   const PackedColor* colors, int n, int textureHandle, int secondaryTextureHandle,
                    const Rect2DAbs& clip, render::DepthMode depthMode = render::DepthMode::Disabled,
                    render::BlendMode blendMode = render::BlendMode::AlphaBlend,
                    render::SamplerMode sampler = {render::SamplerFilter::Linear, true, true},
                    render::SurfaceMode surface = render::SurfaceMode::Default,
                    render::ShaderFamily shader = render::ShaderFamily::Normal,
-                   const PackedColor* specular = nullptr);
+                   const PackedColor* specular = nullptr, float detailMode = 0.0f);
 
     // Reads up to kMaxPolyVerts vertices from the bound _mesh by index and
     // draws them as a fan via DrawFan2D (unclipped -- full backbuffer rect).

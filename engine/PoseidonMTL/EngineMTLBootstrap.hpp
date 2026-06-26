@@ -20,14 +20,15 @@ namespace Poseidon
 // draws, which have no concept of fog; only the legacy 3D fan-draw path
 // (DrawIndexedFan3D) ever sets a real value, read from the source
 // TLVertex's specular field that this struct previously discarded
-// entirely -- the gap that left legacy-path 3D geometry (e.g.
-// Landscape::DrawHorizont's ClipUser0 fade strip) rendering its raw,
-// never-fogged color instead of blending into the horizon.
+// entirely. u1/v1 mirror TLVertex::t1 for legacy 3D multitexture draws
+// (Detail/Grass terrain fallback); ordinary 2D/UI draws just duplicate uv0
+// and keep detailMode at 0.
 struct Vertex2DMTL
 {
     float x, y, z, w;
-    float u, v, fogTC, pad1;
+    float u, v, fogTC, detailMode;
     float r, g, b, a;
+    float u1, v1, pad0, pad1;
 };
 
 // 3D mesh vertex for the hardware T&L path -- same 32-byte layout as GL33's
@@ -231,7 +232,7 @@ class EngineMTLBootstrap
     // each vertex's Vertex2DMTL::fogTC) -- always bound, but a no-op for
     // ordinary 2D/UI draws since their fogTC defaults to 1.0.
     void DrawTriangles2D(const Vertex2DMTL* verts, int vertCount, const uint16_t* indices, int indexCount,
-                         int textureHandle, int clipX, int clipY, int clipW, int clipH,
+                         int textureHandle, int secondaryTextureHandle, int clipX, int clipY, int clipW, int clipH,
                          bool useDepth = false,
                          Poseidon::render::DepthMode depthMode = Poseidon::render::DepthMode::Disabled,
                          Poseidon::render::BlendMode blendMode = Poseidon::render::BlendMode::AlphaBlend,
