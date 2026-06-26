@@ -78,8 +78,11 @@ jobs:
             autoconf \
             autoconf-archive \
             automake \
+            ca-certificates \
             clang \
             libtool \
+            make \
+            perl \
             pkg-config \
             libgl1-mesa-dev \
             libx11-dev \
@@ -142,7 +145,7 @@ jobs:
           clang++ --version
           if [ "${{ runner.os }}" = "Linux" ]; then
             pkg-config --modversion openal
-            ldconfig -p | grep -E 'libopenal\.so(\.1)?'
+            /sbin/ldconfig -p | grep -E 'libopenal\.so(\.1)?'
           fi
 
       - name: Show Windows toolchain versions
