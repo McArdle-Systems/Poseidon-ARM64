@@ -33,10 +33,10 @@ jobs:
         include:
           # [external-data] tests under PoseidonTests read real localization
           # assets (equipment.utf8.html, STRINGTABLE_MAP.utf8.csv,
-          # STRINGTABLE_EQUIPMENT.utf8.csv) from packages/Remaster/, which is
+          # STRINGTABLE_EQUIPMENT.utf8.csv) from packages/Combined/, which is
           # gitignored and not distributed to the GitHub-hosted runners by
           # design. The self-hosted macOS runner has the real data staged
-          # outside the checkout path (see "Stage Remaster test data" below)
+          # outside the checkout path (see "Stage Combined test data" below)
           # and runs these for real; Linux/Windows exclude them by name.
           - name: Linux RelWithDebInfo
             os: ubuntu-24.04
@@ -63,12 +63,12 @@ jobs:
       # packages/ is gitignored and actions/checkout's clean:true wipes it
       # (git clean -ffdx removes ignored files too) at the start of every
       # run, so the real data lives outside the checkout at
-      # /Users/jarvis/ci-data/Remaster and gets relinked in here each time.
-      - name: Stage Remaster test data
+      # /Users/jarvis/ci-data/Combined and gets relinked in here each time.
+      - name: Stage Combined test data
         if: runner.os == 'macOS'
         run: |
           mkdir -p packages
-          ln -sfn /Users/jarvis/ci-data/Remaster packages/Remaster
+          ln -sfn /Users/jarvis/ci-data/Combined packages/Combined
 
       - name: Install Linux system packages
         if: runner.os == 'Linux'
