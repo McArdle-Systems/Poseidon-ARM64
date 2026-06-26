@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Poseidon/Graphics/Core/Engine.hpp>
+#include <Poseidon/Graphics/Core/ZBiasMath.hpp>
 #include <PoseidonGL33/SDLEventWindow.hpp>
 #include <PoseidonMTL/EngineMTLBootstrap.hpp>
 
@@ -147,8 +148,9 @@ class EngineMTL : public Engine
     float ObjMipmapCoef() const override { return 1.5f; }
     void GetZCoefs(float& zAdd, float& zMult) override
     {
-        zAdd = 0;
-        zMult = 1;
+        const auto c = render::zbias::SoftwareCoefs(_bias);
+        zAdd = c.zAdd;
+        zMult = c.zMult;
     }
     int GetBias() override { return _bias; }
     void SetBias(int value) override { _bias = value; }
