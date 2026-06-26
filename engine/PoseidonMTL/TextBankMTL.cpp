@@ -45,6 +45,33 @@ Ref<Texture> TextBankMTL::Load(RStringB name)
     return texture;
 }
 
+// Weather sky cross-fade (see TextureMTL::LoadPixelsInterpolated's doc
+// comment). Mirrors GL33's eps shortcuts at the extremes; otherwise builds
+// one new CPU-blended texture per call rather than GL33's Find()-and-reuse
+// caching -- Metal's "load once, keep forever" texture model (no memory
+// budget/LRU) makes that caching an optimization, not a correctness
+// requirement, so it's skipped for now.
+Ref<Texture> TextBankMTL::LoadInterpolated(RStringB n1, RStringB n2, float factor)
+{
+    const float eps = 1.0f / 256;
+    if (factor >= 1.0f - eps)
+        return Load(n2);
+    if (factor <= eps)
+        return Load(n1);
+
+    TextureMTL* texture = new TextureMTL();
+    texture->SetName(n1); // matches GL33's Copy(index1): the blend's identity is n1's
+    if (!texture->LoadPixelsInterpolated(*_bootstrap, n1, n2, factor))
+    {
+        delete texture;
+        return nullptr;
+    }
+
+    int iFree = _texture.Add();
+    _texture[iFree] = texture;
+    return texture;
+}
+
 void TextBankMTL::InitDetailTextures()
 {
     if (_detail || _grass || _specular || _waterBump)

@@ -37,6 +37,21 @@ class TextureMTL : public Texture
     // any failure -- read error, decode failure, or GPU upload failure.
     bool LoadPixels(EngineMTLBootstrap& bootstrap);
 
+    // Weather sky cross-fade (Landscape.cpp's Weather::SetSky(land, n1, n2,
+    // factor), the two-texture overload used whenever the current overcast
+    // value falls between two WeatherBasic table entries -- e.g. ordinary
+    // clear weather sits between "jasno" and "oblacno"). Decodes both named
+    // files via the same PAADecoder path as LoadPixels, then linearly
+    // blends each matching mip level's RGBA8 pixels by `factor` (0 = pure
+    // n1, 1 = pure n2) before uploading the single blended result. Mirrors
+    // GL33's TextBankGL33::LoadInterpolated, just blended in RGBA8 space on
+    // the CPU instead of native-pixel-format space, since Metal already
+    // decodes everything to RGBA8 up front (no compressed-format upload
+    // path to match). Returns false (texture stays valid/unset) if either
+    // file fails to decode, or if the two textures share no mip level of
+    // matching dimensions.
+    bool LoadPixelsInterpolated(EngineMTLBootstrap& bootstrap, RStringB n1, RStringB n2, float factor);
+
     // Dynamic texture from raw RGBA pixel data (font atlas pages, etc.).
     // Mirrors TextureGL33::InitFromRGBA/UpdateRGBA's contract: dimensions
     // are fixed at Init time, UpdateRGBA always re-uploads the full extent.

@@ -21,7 +21,7 @@ class TextBankMTL : public AbstractTextBank
     int Find(RStringB name) const;
 
     Ref<Texture> Load(RStringB name) override;
-    Ref<Texture> LoadInterpolated(RStringB /*n1*/, RStringB /*n2*/, float /*factor*/) override { return nullptr; }
+    Ref<Texture> LoadInterpolated(RStringB n1, RStringB n2, float factor) override;
     MipInfo UseMipmap(Texture* texture, int level, int levelTop) override;
     void InitDetailTextures();
     TextureMTL* GetDetailTexture();

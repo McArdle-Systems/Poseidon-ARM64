@@ -30,15 +30,15 @@ AlphaStats::Kind ClassifyMetalAlpha(const AlphaStats& decoded)
     return decoded.kind;
 }
 
-} // namespace
-
-bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
+// Shared by LoadPixels and LoadPixelsInterpolated: read a PAA/PAC file
+// through the VFS and decode every mip level it stores.
+bool ReadAndDecodeChain(RStringB name, DecodedImageChain& chain)
 {
     QIFStream in;
-    GFileServer->Open(in, Name());
+    GFileServer->Open(in, name);
     if (in.fail())
     {
-        LOG_WARN(Graphics, "MTL: texture not found: {}", Name());
+        LOG_WARN(Graphics, "MTL: texture not found: {}", static_cast<const char*>(name));
         return false;
     }
 
@@ -49,14 +49,22 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
     std::vector<char> fileData(static_cast<size_t>(size));
     in.read(fileData.data(), size);
 
-    const char* name = Name();
-    const size_t len = name ? std::strlen(name) : 0;
-    const bool isPaa = len >= 4 && (name[len - 1] == 'a' || name[len - 1] == 'A'); // .paa vs .pac
+    const char* cname = name;
+    const size_t len = cname ? std::strlen(cname) : 0;
+    const bool isPaa = len >= 4 && (cname[len - 1] == 'a' || cname[len - 1] == 'A'); // .paa vs .pac
 
-    const DecodedImageChain chain = DecodePAABufferAllMips(fileData.data(), static_cast<size_t>(size), isPaa);
-    if (!chain.valid())
+    chain = DecodePAABufferAllMips(fileData.data(), static_cast<size_t>(size), isPaa);
+    return chain.valid();
+}
+
+} // namespace
+
+bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
+{
+    DecodedImageChain chain;
+    if (!ReadAndDecodeChain(Name(), chain))
     {
-        LOG_WARN(Graphics, "MTL: texture decode failed: {}", name);
+        LOG_WARN(Graphics, "MTL: texture decode failed: {}", Name());
         return false;
     }
     const DecodedImage& top = chain.levels[0];
@@ -105,7 +113,7 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
     _gpuHandle = bootstrap.CreateTextureMipped(levels.data(), static_cast<int>(levels.size()));
     if (_gpuHandle == 0)
     {
-        LOG_WARN(Graphics, "MTL: texture GPU upload failed: {}", name);
+        LOG_WARN(Graphics, "MTL: texture GPU upload failed: {}", Name());
         return false;
     }
     // Only the top level is kept CPU-side -- GetPixel/GetColor (below) only
@@ -113,6 +121,80 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
     // every level here would burn ~33% more host RAM for callers that don't
     // exist yet.
     _rgba = top.rgba;
+    return true;
+}
+
+bool TextureMTL::LoadPixelsInterpolated(EngineMTLBootstrap& bootstrap, RStringB n1, RStringB n2, float factor)
+{
+    DecodedImageChain chain1, chain2;
+    if (!ReadAndDecodeChain(n1, chain1) || !ReadAndDecodeChain(n2, chain2))
+    {
+        LOG_WARN(Graphics, "MTL: interpolated texture decode failed: {} / {}", static_cast<const char*>(n1),
+                 static_cast<const char*>(n2));
+        return false;
+    }
+
+    const size_t levelCount = std::min(chain1.levels.size(), chain2.levels.size());
+    std::vector<std::vector<uint8_t>> blended;
+    blended.reserve(levelCount);
+    for (size_t i = 0; i < levelCount; i++)
+    {
+        const DecodedImage& a = chain1.levels[i];
+        const DecodedImage& b = chain2.levels[i];
+        if (a.width != b.width || a.height != b.height)
+            break; // mismatched mip dims between the two sources -- stop, keep levels blended so far
+        std::vector<uint8_t> out(a.rgba.size());
+        for (size_t p = 0; p < out.size(); p++)
+            out[p] = static_cast<uint8_t>(a.rgba[p] + (static_cast<int>(b.rgba[p]) - static_cast<int>(a.rgba[p])) * factor);
+        blended.push_back(std::move(out));
+    }
+    if (blended.empty())
+    {
+        LOG_WARN(Graphics, "MTL: interpolated texture {} / {} share no compatible mip level",
+                 static_cast<const char*>(n1), static_cast<const char*>(n2));
+        return false;
+    }
+
+    _w = chain1.levels[0].width;
+    _h = chain1.levels[0].height;
+    _nMipmaps = static_cast<int>(blended.size());
+    _largestUsed = 0;
+    _levelNeededThisFrame = _levelNeededLastFrame = _nMipmaps;
+    _levels.clear();
+    _levels.reserve(blended.size());
+    for (size_t i = 0; i < blended.size(); i++)
+        _levels.push_back({chain1.levels[i].width, chain1.levels[i].height});
+
+    // n1's alpha classification wins (matches GL33's Copy(index1) basing the
+    // interpolated texture's identity on n1) -- weather sky textures are
+    // diffuse-only opaque art in practice, but this keeps the same policy
+    // LoadPixels uses instead of silently assuming Opaque.
+    AlphaStats decoded;
+    const AlphaStats* decodedPtr = nullptr;
+    if (chain1.hasAlphaChannel && !chain1.oneBitAlpha)
+    {
+        decoded = ClassifyAlpha(blended[0].data(), static_cast<size_t>(_w) * static_cast<size_t>(_h));
+        decoded.kind = ClassifyMetalAlpha(decoded);
+        decodedPtr = &decoded;
+    }
+    const AlphaStats::Kind kind =
+        ClassifyTextureAlpha(chain1.hasAlphaChannel, chain1.isChromaKey, chain1.oneBitAlpha, decodedPtr);
+    _isAlpha = kind != AlphaStats::Opaque;
+    _isTransparent = kind == AlphaStats::Cutout;
+
+    std::vector<EngineMTLBootstrap::MipLevel> levels;
+    levels.reserve(blended.size());
+    for (size_t i = 0; i < blended.size(); i++)
+        levels.push_back({chain1.levels[i].width, chain1.levels[i].height, blended[i].data()});
+
+    _gpuHandle = bootstrap.CreateTextureMipped(levels.data(), static_cast<int>(levels.size()));
+    if (_gpuHandle == 0)
+    {
+        LOG_WARN(Graphics, "MTL: interpolated texture GPU upload failed: {} / {}", static_cast<const char*>(n1),
+                 static_cast<const char*>(n2));
+        return false;
+    }
+    _rgba = blended[0];
     return true;
 }
 
