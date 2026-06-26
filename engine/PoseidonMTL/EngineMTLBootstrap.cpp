@@ -673,6 +673,12 @@ void EngineMTLBootstrap::EnsurePipeline()
         MTL::SamplerDescriptor* sampDesc = MTL::SamplerDescriptor::alloc()->init();
         sampDesc->setMinFilter(point ? MTL::SamplerMinMagFilterNearest : MTL::SamplerMinMagFilterLinear);
         sampDesc->setMagFilter(point ? MTL::SamplerMinMagFilterNearest : MTL::SamplerMinMagFilterLinear);
+        // Mip filter defaults to NotMipmapped (always sample LOD 0, ignoring
+        // every other level even on a texture created with a real mip
+        // chain) -- without this, CreateTextureMipped's lower levels would
+        // be uploaded but never sampled. Textures with only one level
+        // (CreateTexture) are unaffected: there's nothing to filter between.
+        sampDesc->setMipFilter(point ? MTL::SamplerMipFilterNearest : MTL::SamplerMipFilterLinear);
         sampDesc->setSAddressMode(clampU ? MTL::SamplerAddressModeClampToEdge : MTL::SamplerAddressModeRepeat);
         sampDesc->setTAddressMode(clampV ? MTL::SamplerAddressModeClampToEdge : MTL::SamplerAddressModeRepeat);
         _impl->samplerStates[i] = _impl->device->newSamplerState(sampDesc);
@@ -1265,6 +1271,41 @@ int EngineMTLBootstrap::CreateTexture(int width, int height, const uint8_t* rgba
 
     MTL::Region region = MTL::Region::Make2D(0, 0, static_cast<NS::UInteger>(width), static_cast<NS::UInteger>(height));
     tex->replaceRegion(region, 0, rgba, static_cast<NS::UInteger>(width) * 4);
+
+    _impl->textures.push_back(tex);
+    return static_cast<int>(_impl->textures.size());
+}
+
+int EngineMTLBootstrap::CreateTextureMipped(const MipLevel* levels, int levelCount)
+{
+    if (_impl->device == nullptr || levels == nullptr || levelCount <= 0 || levels[0].width <= 0 ||
+        levels[0].height <= 0 || levels[0].rgba == nullptr)
+        return 0;
+
+    MTL::TextureDescriptor* desc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA8Unorm, static_cast<NS::UInteger>(levels[0].width),
+        static_cast<NS::UInteger>(levels[0].height), /*mipmapped*/ true);
+    desc->setMipmapLevelCount(static_cast<NS::UInteger>(levelCount));
+    desc->setUsage(MTL::TextureUsageShaderRead);
+    desc->setStorageMode(MTL::StorageModeShared);
+
+    MTL::Texture* tex = _impl->device->newTexture(desc);
+    desc->release();
+    if (tex == nullptr)
+        return 0;
+
+    for (int i = 0; i < levelCount; i++)
+    {
+        // A missing/invalid level invalidates every coarser level after it
+        // too (DecodePAABufferAllMips already stops at the first decode
+        // failure) -- stop uploading rather than feed replaceRegion garbage.
+        if (levels[i].rgba == nullptr || levels[i].width <= 0 || levels[i].height <= 0)
+            break;
+        MTL::Region levelRegion = MTL::Region::Make2D(0, 0, static_cast<NS::UInteger>(levels[i].width),
+                                                       static_cast<NS::UInteger>(levels[i].height));
+        tex->replaceRegion(levelRegion, static_cast<NS::UInteger>(i), levels[i].rgba,
+                           static_cast<NS::UInteger>(levels[i].width) * 4);
+    }
 
     _impl->textures.push_back(tex);
     return static_cast<int>(_impl->textures.size());

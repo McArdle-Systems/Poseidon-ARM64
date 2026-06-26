@@ -34,15 +34,17 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
     const size_t len = name ? std::strlen(name) : 0;
     const bool isPaa = len >= 4 && (name[len - 1] == 'a' || name[len - 1] == 'A'); // .paa vs .pac
 
-    const DecodedImage img = DecodePAABuffer(fileData.data(), static_cast<size_t>(size), isPaa);
-    if (!img.valid())
+    const DecodedImageChain chain = DecodePAABufferAllMips(fileData.data(), static_cast<size_t>(size), isPaa);
+    if (!chain.valid())
     {
         LOG_WARN(Graphics, "MTL: texture decode failed: {}", name);
         return false;
     }
+    const DecodedImage& top = chain.levels[0];
 
-    _w = img.width;
-    _h = img.height;
+    _w = top.width;
+    _h = top.height;
+    _nMipmaps = static_cast<int>(chain.levels.size());
 
     // Same tiering TextureGL33::GetAlphaClass() uses (ClassifyTextureAlpha's
     // documented policy): only decode-scan the alpha channel when the
@@ -54,23 +56,37 @@ bool TextureMTL::LoadPixels(EngineMTLBootstrap& bootstrap)
     // wrongly blend instead of render opaque.
     AlphaStats decoded;
     const AlphaStats* decodedPtr = nullptr;
-    if (img.hasAlphaChannel && !img.oneBitAlpha)
+    if (chain.hasAlphaChannel && !chain.oneBitAlpha)
     {
-        decoded = ClassifyAlpha(img.rgba.data(), static_cast<size_t>(_w) * static_cast<size_t>(_h));
+        decoded = ClassifyAlpha(top.rgba.data(), static_cast<size_t>(_w) * static_cast<size_t>(_h));
         decodedPtr = &decoded;
     }
     const AlphaStats::Kind kind =
-        ClassifyTextureAlpha(img.hasAlphaChannel, img.isChromaKey, img.oneBitAlpha, decodedPtr);
+        ClassifyTextureAlpha(chain.hasAlphaChannel, chain.isChromaKey, chain.oneBitAlpha, decodedPtr);
     _isAlpha = kind != AlphaStats::Opaque;
     _isTransparent = kind == AlphaStats::Cutout;
 
-    _gpuHandle = bootstrap.CreateTexture(_w, _h, img.rgba.data());
+    // Real GPU mip chain (not just the top level) -- see CreateTextureMipped's
+    // doc comment (EngineMTLBootstrap.hpp) for why a single-level texture
+    // aliases at a distance. v1 still loads every level up front, same as
+    // the single-level path before it; no per-frame visible-level streaming
+    // yet (that's GL33's TextBankGL33, a separate, much larger piece).
+    std::vector<EngineMTLBootstrap::MipLevel> levels;
+    levels.reserve(chain.levels.size());
+    for (const DecodedImage& level : chain.levels)
+        levels.push_back({level.width, level.height, level.rgba.data()});
+
+    _gpuHandle = bootstrap.CreateTextureMipped(levels.data(), static_cast<int>(levels.size()));
     if (_gpuHandle == 0)
     {
         LOG_WARN(Graphics, "MTL: texture GPU upload failed: {}", name);
         return false;
     }
-    _rgba = std::move(img.rgba);
+    // Only the top level is kept CPU-side -- GetPixel/GetColor (below) only
+    // ever sample it, mirroring the original single-level behavior; storing
+    // every level here would burn ~33% more host RAM for callers that don't
+    // exist yet.
+    _rgba = top.rgba;
     return true;
 }
 

@@ -11,16 +11,20 @@ namespace Poseidon
 
 class EngineMTLBootstrap;
 
-// Real Metal-backed texture: decodes the full top-level image via the shared
+// Real Metal-backed texture: decodes every mip level via the shared
 // PAADecoder utility (handles every PAA/PAC source format -- DXT1/3/5,
 // ARGB8888/4444/1555, AI88, P8 -- decompressing to RGBA8888 on the CPU,
-// since Apple Silicon GPUs have no BC/DXT hardware decode) and uploads it as
-// a single-mip RGBA8Unorm MTLTexture via EngineMTLBootstrap::CreateTexture.
+// since Apple Silicon GPUs have no BC/DXT hardware decode) and uploads the
+// full chain as a real mipmapped RGBA8Unorm MTLTexture via
+// EngineMTLBootstrap::CreateTextureMipped.
 //
-// Deliberately simpler than TextureGL33: one mip level (no mip chain -- menu/
-// UI textures render close to 1:1), no LRU eviction/memory budget (load once,
-// keep forever). Good enough for menu-scale texture counts; revisit if/when
-// this backend needs to stream 3D world textures.
+// Still simpler than TextureGL33 in one real way: no per-frame visible-
+// mip-level streaming or LRU eviction/memory budget -- every level loads
+// once up front and stays resident forever, same as the original single-
+// level design, just with real lower-resolution levels for the GPU to
+// sample now instead of just one. Good enough for menu-scale texture
+// counts; revisit (TextBankGL33's adaptive streaming system) if/when this
+// backend needs to bound 3D-world texture memory.
 class TextureMTL : public Texture
 {
   public:
@@ -47,7 +51,7 @@ class TextureMTL : public Texture
 
     int AWidth(int /*level*/ = 0) const override { return _w; }
     int AHeight(int /*level*/ = 0) const override { return _h; }
-    int ANMipmaps() const override { return _gpuHandle != 0 ? 1 : 0; }
+    int ANMipmaps() const override { return _nMipmaps; }
     void ASetNMipmaps(int /*n*/) override {}
     AbstractMipmapLevel& AMipmap(int /*level*/) override { return _mip; }
     const AbstractMipmapLevel& AMipmap(int /*level*/) const override { return _mip; }
@@ -77,6 +81,7 @@ class TextureMTL : public Texture
   private:
     int _w = 0, _h = 0;
     int _gpuHandle = 0; // EngineMTLBootstrap texture handle; 0 = none/failed (renders fallback white)
+    int _nMipmaps = 1;  // real decoded level count for LoadPixels; always 1 for InitFromRGBA (dynamic/UI textures)
     bool _isAlpha = false;
     bool _isTransparent = false;
     PacLevelMem _mip; // unused placeholder -- AMipmap() must return a reference to something

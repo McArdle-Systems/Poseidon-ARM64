@@ -231,6 +231,28 @@ class EngineMTLBootstrap
     // mipmaps -- menu/UI textures render close to 1:1). Returns a handle
     // (>0) usable with DrawTriangles2D, or 0 on failure.
     int CreateTexture(int width, int height, const uint8_t* rgba);
+
+    // One already-decoded mip level for CreateTextureMipped -- width/height/
+    // rgba (8 bits/channel) for that level. `rgba` is read during the call
+    // only, not copied/owned by this struct.
+    struct MipLevel
+    {
+        int width = 0;
+        int height = 0;
+        const uint8_t* rgba = nullptr; // width*height*4 bytes, RGBA8
+    };
+
+    // Like CreateTexture, but uploads a full mip chain (levels[0] = top/
+    // full-res) instead of a single level -- gives the GPU real lower-
+    // resolution data to sample when a texture is minified (distant/small on
+    // screen), instead of always sampling the full-res level and aliasing.
+    // `levels` must be ordered top-to-bottom, each one's dimensions actually
+    // halving (e.g. Poseidon::DecodePAABufferAllMips' own stored chain) --
+    // this does not generate any levels itself, only uploads what it's
+    // given. Returns a handle (>0) usable with DrawSectionTL/DrawTriangles2D
+    // exactly like a CreateTexture handle, or 0 on failure.
+    int CreateTextureMipped(const MipLevel* levels, int levelCount);
+
     void DestroyTexture(int handle);
 
     // Re-uploads the full extent of an existing texture in place (font-atlas
