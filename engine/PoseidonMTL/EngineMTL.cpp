@@ -7,6 +7,7 @@
 #include <Poseidon/Graphics/Shared/WindowPlacement.hpp>
 #include <Poseidon/Graphics/Core/TLVertex.hpp>
 #include <Poseidon/Graphics/Core/MatrixConversion.hpp>
+#include <Poseidon/Graphics/Rendering/BuildRenderPassDescriptor.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
 #include <Poseidon/Graphics/Rendering/Lighting/Lights.hpp>
@@ -208,7 +209,7 @@ void EngineMTL::PixelToNDC(float px, float py, float& ndcX, float& ndcY) const
 }
 
 void EngineMTL::DrawFan2D(const float* xy, const float* uv, const PackedColor* colors, int n, int textureHandle,
-                          const Rect2DAbs& clip)
+                          const Rect2DAbs& clip, render::DepthMode depthMode, render::BlendMode blendMode)
 {
     if (n < 3 || n > kMaxPolyVerts)
         return;
@@ -235,7 +236,8 @@ void EngineMTL::DrawFan2D(const float* xy, const float* uv, const PackedColor* c
     }
 
     _bootstrap.DrawTriangles2D(verts, n, indices, idxCount, textureHandle, static_cast<int>(clip.x),
-                               static_cast<int>(clip.y), static_cast<int>(clip.w), static_cast<int>(clip.h));
+                               static_cast<int>(clip.y), static_cast<int>(clip.w), static_cast<int>(clip.h), depthMode,
+                               blendMode);
 }
 
 void EngineMTL::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect2DAbs& clip)
@@ -344,12 +346,25 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
     }
 
     const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
-    DrawFan2D(xy, uv, colors, n, _currentTriTexture, fullScreen);
+    DrawFan2D(xy, uv, colors, n, _currentTriTexture, fullScreen, _currentTriDepthMode, _currentTriBlendMode);
 }
 
-void EngineMTL::PrepareTriangle(const MipInfo& mip, int /*specFlags*/)
+// GL33's equivalent is the legacy/queued path's FlushQueue -> ApplyPassState
+// -> BuildRenderPassDescriptor -> ApplyPipeline chain (EngineGL33_Queue.cpp):
+// every draw, hardware-TL or legacy/software, resolves through the same
+// descriptor builder so state (depth/blend/stencil) is decoupled from how the
+// vertices get to the GPU. This was previously the gap that let shadow polys
+// without a hardware vertex buffer (most real casters, see Shadow.cpp's
+// Object::DrawShadow) bypass the TL path's stencil exclusion entirely --
+// PrepareTriangle ignored specFlags outright. Default BuildContext is correct
+// here: this path never multitextures, and PassKindHint isn't set anywhere
+// for it (matches GL33, which also doesn't branch on PassKind directly).
+void EngineMTL::PrepareTriangle(const MipInfo& mip, int specFlags)
 {
     _currentTriTexture = mip.IsOK() ? GpuHandleOf(mip._texture) : 0;
+    const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(specFlags));
+    _currentTriDepthMode = d.depth;
+    _currentTriBlendMode = d.blend;
 }
 
 VertexBuffer* EngineMTL::CreateVertexBuffer(const Shape& src, VBType type)
@@ -399,20 +414,39 @@ void EngineMTL::PrepareTriangleTL(const MipInfo& mip, const render::LegacySpec& 
 {
     _tlCurrentTexture = mip.IsOK() ? GpuHandleOf(mip._texture) : 0;
     // Runs after SetMaterial (Shape::Draw's PrepareTL call order), right
-    // before DrawSectionTL consumes _tlObject/_tlSectionIsBlend -- see
+    // before DrawSectionTL consumes _tlObject/_tlSectionBlendMode -- see
     // fsMeshOpaque/fsMeshBlend's comments for why opaque, cutout and blend
     // textures each need different treatment.
     Texture* tex = mip.IsOK() ? mip._texture : nullptr;
     const bool isAlpha = tex && tex->IsAlpha();
     const bool isCutout = tex && tex->IsTransparent();
     _tlObject.flags[0] = isCutout ? 1.0f : 0.0f;
-    _tlSectionIsBlend = isAlpha && !isCutout;
-    _tlSectionNoZWrite = render::Has(spec.backend, render::Backend::NoZWrite);
-    // Shadow polys (Shadow.cpp's MakeShadow) carry no texture and route
-    // through their own dedicated stencil-exclusion pipeline regardless of
-    // isAlpha/isCutout/blendEnabled above -- see EngineMTLBootstrap::
-    // DrawSectionTL's isShadow doc comment.
-    _tlSectionIsShadow = render::Has(spec.backend, render::Backend::IsShadow);
+
+    // Shadow polys (Shadow.cpp's MakeShadow) carry no texture and always
+    // resolve to BuildRenderPassDescriptor's isShadow branch
+    // (BuildRenderPassDescriptor.hpp: DepthMode::Shadow + BlendMode::Shadow,
+    // checked before IsAlpha/IsTransparent) regardless of the
+    // texture-classified isAlpha/isCutout below -- see fsShadow's doc
+    // comment for the single-pass stencil-exclusion scheme this selects.
+    // Every other section's blend choice still comes from the texture's
+    // measured alpha stats (Texture::IsAlpha/IsTransparent), not the spec's
+    // IsAlpha/IsTransparent bits BuildRenderPassDescriptor would otherwise
+    // use: that's a deliberate, separately-tested Metal-specific signal (see
+    // METAL_PORT_PROGRESS.md's alpha-to-coverage note and the chroma-key
+    // threading fix), not something this milestone replaces.
+    if (render::Has(spec.backend, render::Backend::IsShadow))
+    {
+        _tlSectionDepthMode = render::DepthMode::Shadow;
+        _tlSectionBlendMode = render::BlendMode::Shadow;
+    }
+    else
+    {
+        const bool isBlend = isAlpha && !isCutout;
+        _tlSectionBlendMode = isBlend ? render::BlendMode::AlphaBlend : render::BlendMode::Opaque;
+        _tlSectionDepthMode = (isBlend || render::Has(spec.backend, render::Backend::NoZWrite))
+                                  ? render::DepthMode::ReadOnly
+                                  : render::DepthMode::Normal;
+    }
 }
 
 // Ported from GL33's PrepareMeshTL/PrepareMeshTLImpl (EngineGL33_Mesh.cpp).
@@ -484,26 +518,12 @@ void EngineMTL::DrawSectionTL(const Shape& sMesh, int beg, int end)
         return;
 
     _bootstrap.DrawSectionTL(buf->VertexBufferHandle(), buf->IndexBufferHandle(), firstIndex, indexCount,
-                             _tlCurrentTexture, _tlObject, _tlFrame, _tlSectionIsBlend, _tlSectionNoZWrite,
-                             _tlSectionIsShadow);
+                             _tlCurrentTexture, _tlObject, _tlFrame, _tlSectionDepthMode, _tlSectionBlendMode);
 }
 
 void EngineMTL::DrawPolygon(const VertexIndex* i, int n)
 {
     DrawIndexedFan3D(i, n);
-}
-
-void EngineMTL::BeginShadowPass()
-{
-    _bootstrap.BeginShadowPass();
-}
-
-// shadowFactor scale matches Shadow.cpp's Object::DrawShadow (GetShadowFactor()
-// is 0..256, the per-poly shadow material's alpha there is GetShadowFactor() *
-// (1.0/256)) -- the single darken quad here needs the same overall darkness.
-void EngineMTL::EndShadowPass()
-{
-    _bootstrap.EndShadowPass(static_cast<float>(GetShadowFactor()) * (1.0f / 256.0f));
 }
 
 void EngineMTL::DrawSection(const FaceArray& face, Offset beg, Offset end)

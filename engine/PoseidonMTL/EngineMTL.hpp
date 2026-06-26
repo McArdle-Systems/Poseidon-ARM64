@@ -135,13 +135,13 @@ class EngineMTL : public Engine
     void EndMeshTL(const Shape& sMesh) override {}
     void DrawSectionTL(const Shape& sMesh, int beg, int end) override;
 
-    // Brackets Scene::DrawObjectsAndShadowsPass2's per-caster shadow draw
-    // loop (one call per frame, not per caster) -- see Engine::BeginShadowPass's
-    // doc comment (Engine.hpp) for the two-phase mark/darken contract this
-    // implements, and EngineMTLBootstrap::BeginShadowPass/EndShadowPass for
-    // the Metal side of it.
-    void BeginShadowPass() override;
-    void EndShadowPass() override;
+    // No BeginShadowPass/EndShadowPass override: GL33's versions only flush
+    // its batched-draw queue (EngineGL33_Draw.cpp), and this backend has no
+    // queue yet (every DrawSectionTL/DrawTriangles2D call draws immediately)
+    // -- nothing to bracket, so the base no-op (Engine.hpp) is correct as-is.
+    // The actual single-pass shadow darken/exclusion happens per-draw via
+    // DepthMode::Shadow + BlendMode::Shadow, same as every other descriptor
+    // mode -- see Engine::BeginShadowPass's doc comment.
 
     AbstractTextBank* TextBank() override;
     void TextureDestroyed(Texture* /*tex*/) override {}
@@ -191,6 +191,16 @@ class EngineMTL : public Engine
     // DrawPolygon/DrawSection to resolve each fan's vertices/texture.
     TLVertexTable* _mesh = nullptr;
     int _currentTriTexture = 0;
+    // Set by PrepareTriangle from render::BuildRenderPassDescriptor(spec)'s
+    // depth/blend fields, same role _tlSectionDepthMode/_tlSectionBlendMode
+    // play for the hardware-TL path -- threaded through DrawIndexedFan3D to
+    // DrawFan2D/DrawTriangles2D so legacy-path shadow polys (most real
+    // shadow casters, see Shadow.cpp's Object::DrawShadow) get the same
+    // single-pass stencil-exclusion state the TL path does. Every other
+    // mode/value is currently ignored by DrawFan2D/DrawTriangles2D outside
+    // the Shadow case -- see those methods' doc comments.
+    render::DepthMode _currentTriDepthMode = render::DepthMode::Disabled;
+    render::BlendMode _currentTriBlendMode = render::BlendMode::AlphaBlend;
 
     // Hardware T&L mesh path state. `_tlFrame`/`_tlObject` are rebuilt on
     // every PrepareMeshTL call (v1 simplicity -- GL33 caches its equivalent
@@ -202,18 +212,13 @@ class EngineMTL : public Engine
     FrameConstantsMTL _tlFrame = {};
     ObjectConstantsMTL _tlObject = {};
     int _tlCurrentTexture = 0;
-    // True only for AlphaStats::Blend textures (set alongside _tlObject by
-    // PrepareTriangleTL) -- selects DrawSectionTL's blend-enabled pipeline.
-    bool _tlSectionIsBlend = false;
-    // True when the section's legacy spec carries Backend::NoZWrite (shadow
-    // polys, see Shadow.cpp's MakeShadow) -- selects DrawSectionTL's
-    // write-disabled depth state so shadows can't win the depth test against
-    // their own caster drawn later in the same pass.
-    bool _tlSectionNoZWrite = false;
-    // True when the section's legacy spec carries Backend::IsShadow --
-    // selects DrawSectionTL's dedicated stencil-exclusion pipeline/depth
-    // state (see EngineMTLBootstrap::DrawSectionTL's isShadow doc comment).
-    bool _tlSectionIsShadow = false;
+    // Set alongside _tlObject by PrepareTriangleTL from
+    // render::BuildRenderPassDescriptor(spec)'s depth/blend fields -- the
+    // single source of truth for what state a section's spec bits resolve
+    // to, instead of re-deriving ad hoc booleans from Backend bits here.
+    // DrawSectionTL maps these to the matching pipeline/depth-stencil state.
+    render::DepthMode _tlSectionDepthMode = render::DepthMode::Normal;
+    render::BlendMode _tlSectionBlendMode = render::BlendMode::Opaque;
     bool _sunEnabled = false;
 
     void CreateWindowAndDevice();
@@ -223,13 +228,17 @@ class EngineMTL : public Engine
 
     // Converts up to kMaxPolyVerts already-pixel-space/colored/UV'd vertices
     // into a triangle fan and issues one DrawTriangles2D call. Shared by
-    // Draw2D (always a 4-vertex quad) and both DrawPoly overloads.
+    // Draw2D (always a 4-vertex quad), both DrawPoly overloads, and
+    // DrawIndexedFan3D (the legacy 3D fan path). `depthMode`/`blendMode`
+    // default to ordinary 2D/UI state -- only DrawIndexedFan3D passes a
+    // real (possibly Shadow) value through from PrepareTriangle.
     enum
     {
         kMaxPolyVerts = 32
     };
     void DrawFan2D(const float* xy, const float* uv, const PackedColor* colors, int n, int textureHandle,
-                   const Rect2DAbs& clip);
+                   const Rect2DAbs& clip, render::DepthMode depthMode = render::DepthMode::Disabled,
+                   render::BlendMode blendMode = render::BlendMode::AlphaBlend);
 
     // Reads up to kMaxPolyVerts vertices from the bound _mesh by index and
     // draws them as a fan via DrawFan2D (unclipped -- full backbuffer rect).

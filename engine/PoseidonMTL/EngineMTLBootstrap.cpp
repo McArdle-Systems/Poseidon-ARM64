@@ -214,18 +214,25 @@ fragment float4 fsMeshBlend(VSOutMesh in [[stage_in]], constant FrameConstants& 
     return float4(finalColor, in.color.a * texColor.a);
 }
 
-// Shadow stencil-mark pass (pipelineStateShadowMark, color writes off at the
-// pipeline level -- this function's return value never reaches the
-// framebuffer). The only thing that matters here is discard_fragment():
+// Single-pass shadow draw (pipelineStateTLShadow, color writes ON, Shadow
+// blend factors ZERO/ONE_MINUS_SRC_ALPHA -- see GLBlendState.hpp's Shadow()).
+// Paired with depthStateShadow's stencil EQUAL 0 + INCREMENT: this fragment's
+// output IS the direct (1-srcAlpha) darken, gated by the stencil test having
+// already passed, so overlapping shadow polygons can't double-darken the same
+// pixel -- mirrors GL33's actual single-pass ApplyDepthMode(Shadow) +
+// ApplyBlendMode(Shadow) combination (see Engine::BeginShadowPass's updated
+// doc comment, Engine.hpp), not a separate mark-then-darken scheme. The
+// discard_fragment() below still matters even though color writes are on:
 // Metal suppresses depth/stencil writes for a discarded fragment same as a
 // failed test, so a shadow poly's transparent texels (foliage leaf gaps in
 // a caster's IsAlpha shadow texture, see Shadow.cpp's MakeShadow) don't
-// phantom-stamp the stencil mask -- mirrors GL33's PSShadow discard
+// phantom-stamp the stencil mask and block a later caster's legitimate
+// darken at that pixel -- mirrors GL33's PSShadow discard
 // (EngineGL33_Shaders.cpp), minus that shader's gl_FragDepth force-late-Z
 // trick (Metal's fragment-discard already suppresses stencil writes
 // without it, no early-Z hazard to work around).
-fragment float4 fsShadowMark(VSOutMesh in [[stage_in]], texture2d<float> tex [[texture(0)]],
-                             sampler samp [[sampler(0)]])
+fragment float4 fsShadow(VSOutMesh in [[stage_in]], texture2d<float> tex [[texture(0)]],
+                         sampler samp [[sampler(0)]])
 {
     float a = in.color.a * tex.sample(samp, in.uv).a;
     if (a < (1.0 / 255.0))
@@ -255,41 +262,38 @@ struct EngineMTLBootstrap::Impl
     // DrawSectionTL's blendEnabled parameter).
     MTL::RenderPipelineState* pipelineStateTL = nullptr;       // fsMeshOpaque, blending disabled
     MTL::RenderPipelineState* pipelineStateTLBlend = nullptr;  // fsMeshBlend, blending enabled
-    // Shadow stencil-MARK variant: vsMesh/fsShadowMark, color writes off
-    // (colorAttachment writeMask None at pipeline-creation time) -- pure
-    // stencil-stamp, no visible output. Paired with depthStateShadowMark.
-    // See BeginShadowPass/EndShadowPass (header) for the two-phase scheme
-    // this replaces the old per-poly EQUAL-0/INCREMENT approach with.
-    MTL::RenderPipelineState* pipelineStateShadowMark = nullptr;
-    // Shadow DARKEN variant: the plain 2D vs2d/fs2d pipeline (a fullscreen
-    // quad sampling the 1x1 fallbackWhite texture, vertex color carries the
-    // darken alpha) but with shadow blend factors (Zero, OneMinusSourceAlpha)
-    // instead of the 2D pipeline's normal (SourceAlpha, OneMinusSourceAlpha)
-    // -- GL33's BlendMode::Shadow (GLBlendState.hpp). Drawn once in
-    // EndShadowPass, stencil-gated to exactly the pixels pipelineStateShadowMark
-    // marked.
-    MTL::RenderPipelineState* pipelineState2DShadowDarken = nullptr;
+    // Single-pass shadow variant for the hardware-TL path: vsMesh/fsShadow,
+    // color writes ON, Shadow blend factors (Zero, OneMinusSourceAlpha) --
+    // paired with depthStateShadow's stencil EQUAL 0 + INCREMENT. See
+    // fsShadow's doc comment and Engine::BeginShadowPass's updated doc
+    // comment (Engine.hpp) for why this is one pass, not mark-then-darken.
+    MTL::RenderPipelineState* pipelineStateTLShadow = nullptr;
+    // Same single-pass shadow scheme for the legacy/2D fan-draw path (most
+    // real shadow casters go through this one, not pipelineStateTLShadow --
+    // see Shadow.cpp's Object::DrawShadow): plain vs2d/fs2d functions with
+    // Shadow blend factors instead of the 2D pipeline's normal
+    // (SourceAlpha, OneMinusSourceAlpha). Paired with the same depthStateShadow.
+    MTL::RenderPipelineState* pipelineState2DShadow = nullptr;
     // Depth test+write for 3D mesh draws, vs. always-pass/no-write for 2D UI
     // draws sharing the same encoder/pass -- both pipelines declare the same
     // depthAttachmentPixelFormat (required by Metal once the pass has a
     // depth attachment), but only TL draws should actually test/write it.
-    // depthStateTL/TLNoWrite carry a stencil op too: ALWAYS+REPLACE(ref) on
-    // every pixel they touch -- with the encoder's stencil reference pinned
-    // to 0 outside the BeginShadowPass/EndShadowPass bracket, this resets the
-    // shadow mask back to a clean slate ahead of next frame's shadow pass.
+    // depthStateTL/TLNoWrite carry a stencil op too: ALWAYS+REPLACE(ref=0) on
+    // every pixel they touch -- since the encoder's stencil reference never
+    // changes from Metal's default (0), this resets the shadow mask back to
+    // a clean slate ahead of the next shadow draw, every frame.
     MTL::DepthStencilState* depthStateTL = nullptr;
     MTL::DepthStencilState* depthStateDisabled = nullptr;
     MTL::DepthStencilState* depthStateTLNoWrite = nullptr; // depth test on, write off -- NoZWrite sections (shadows)
-    // Stencil ALWAYS+REPLACE(ref), gated by the normal depth test (LessEqual)
-    // so a shadow occluded by closer solid geometry doesn't mark the
-    // stencil there. Used only inside BeginShadowPass/EndShadowPass, with
-    // the encoder's stencil reference pinned to 0xFF for that bracket.
-    MTL::DepthStencilState* depthStateShadowMark = nullptr;
-    // Stencil EQUAL(ref)+KEEP, depth test disabled (screen-space fullscreen
-    // quad, nothing to depth-test against) -- gates EndShadowPass's single
-    // darken draw to exactly the pixels depthStateShadowMark stamped this
-    // frame. Ref is the same 0xFF BeginShadowPass pinned.
-    MTL::DepthStencilState* depthStateShadowDarken = nullptr;
+    // Stencil EQUAL(ref=0)+INCREMENT(clamped), gated by the normal depth test
+    // (LessEqual), depth write off. A shadow polygon only passes the stencil
+    // test (and thus only blends/increments) if no earlier overlapping
+    // polygon already marked this pixel this pass -- the single-pass
+    // exclusion scheme GL33 actually uses (GLDepthStencilState.hpp's
+    // Shadow()). The encoder's stencil reference is never changed from
+    // Metal's default (0) -- no BeginShadowPass/EndShadowPass bracket needed,
+    // see DrawSectionTL's doc comment.
+    MTL::DepthStencilState* depthStateShadow = nullptr;
     MTL::Texture* depthTexture = nullptr;
     std::vector<MTL::Buffer*> meshBuffers; // handle = index + 1; 0 reserved for "none"
 
@@ -460,9 +464,9 @@ void EngineMTLBootstrap::EnsureDepthTarget(int width, int height)
         _impl->depthTexture = nullptr;
     }
 
-    // Depth32Float_Stencil8 (not plain Depth32Float) -- the shadow
-    // mark/darken two-phase scheme (see BeginShadowPass/EndShadowPass) needs
-    // a stencil plane on the same attachment.
+    // Depth32Float_Stencil8 (not plain Depth32Float) -- the single-pass
+    // shadow exclusion scheme (depthStateShadow) needs a stencil plane on
+    // the same attachment.
     MTL::TextureDescriptor* desc = MTL::TextureDescriptor::texture2DDescriptor(
         MTL::PixelFormatDepth32Float_Stencil8, static_cast<NS::UInteger>(width), static_cast<NS::UInteger>(height),
         false);
@@ -531,20 +535,20 @@ void EngineMTLBootstrap::EnsurePipeline()
                   error ? error->localizedDescription()->utf8String() : "(unknown)");
     }
 
-    // Shadow DARKEN variant: same vs2d/fs2d functions (a fullscreen quad
-    // sampling fallbackWhite, vertex color carrying the darken alpha), but
-    // (Zero, OneMinusSourceAlpha) blend factors instead of the 2D pipeline's
-    // (SourceAlpha, OneMinusSourceAlpha) -- GL33's BlendMode::Shadow. Drawn
-    // once per frame in EndShadowPass.
+    // Single-pass shadow variant for the legacy/2D fan-draw path: same
+    // vs2d/fs2d functions, but Shadow blend factors (Zero, OneMinusSourceAlpha)
+    // instead of the 2D pipeline's normal (SourceAlpha, OneMinusSourceAlpha)
+    // -- GL33's BlendMode::Shadow (GLBlendState.hpp). Paired with
+    // depthStateShadow below; see that field's doc comment.
     colorDesc->setSourceRGBBlendFactor(MTL::BlendFactorZero);
     colorDesc->setSourceAlphaBlendFactor(MTL::BlendFactorOne);
     colorDesc->setDestinationRGBBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
     colorDesc->setDestinationAlphaBlendFactor(MTL::BlendFactorZero);
 
-    _impl->pipelineState2DShadowDarken = _impl->device->newRenderPipelineState(desc, &error);
-    if (_impl->pipelineState2DShadowDarken == nullptr)
+    _impl->pipelineState2DShadow = _impl->device->newRenderPipelineState(desc, &error);
+    if (_impl->pipelineState2DShadow == nullptr)
     {
-        LOG_ERROR(Graphics, "EngineMTLBootstrap: shadow darken pipeline state creation failed: {}",
+        LOG_ERROR(Graphics, "EngineMTLBootstrap: 2D shadow pipeline state creation failed: {}",
                   error ? error->localizedDescription()->utf8String() : "(unknown)");
     }
 
@@ -563,11 +567,11 @@ void EngineMTLBootstrap::EnsurePipeline()
 
     // Stencil ALWAYS + REPLACE(ref=0): every pixel a Normal/NoWrite draw
     // touches gets its stencil reset to 0 -- GL33's depthstencil::Normal/
-    // ReadOnly (GLDepthStencilState.hpp). With the encoder's stencil
-    // reference pinned to 0 outside the BeginShadowPass/EndShadowPass
-    // bracket, this is what gives next frame's shadow mark phase
-    // (depthStateShadowMark below) a clean slate on every pixel the
-    // opaque/blend passes drew.
+    // ReadOnly (GLDepthStencilState.hpp). Since the encoder's stencil
+    // reference never changes from Metal's default (0), this is what gives
+    // every shadow draw (depthStateShadow below) a clean slate on every
+    // pixel the opaque/blend passes drew, every frame -- see
+    // depthStateShadow's doc comment.
     MTL::StencilDescriptor* stencilAlwaysReplaceZero = MTL::StencilDescriptor::alloc()->init();
     stencilAlwaysReplaceZero->setStencilCompareFunction(MTL::CompareFunctionAlways);
     stencilAlwaysReplaceZero->setStencilFailureOperation(MTL::StencilOperationKeep);
@@ -609,54 +613,35 @@ void EngineMTLBootstrap::EnsurePipeline()
     depthDescTLNoWrite->release();
     stencilAlwaysReplaceZero->release();
 
-    // Shadow MARK phase (BeginShadowPass/EndShadowPass): stencil ALWAYS +
-    // REPLACE(ref), gated by the normal depth test -- a shadow poly occluded
-    // by closer solid geometry fails the depth test and Keep's the stencil
-    // unmarked there. REPLACE is idempotent: any number of overlapping
-    // casters/pieces stamping the same pixel just keeps writing the same
-    // ref value, no compounding. The encoder pins the reference to 0xFF for
-    // the whole BeginShadowPass/EndShadowPass bracket (see those methods).
-    MTL::StencilDescriptor* stencilAlwaysReplace = MTL::StencilDescriptor::alloc()->init();
-    stencilAlwaysReplace->setStencilCompareFunction(MTL::CompareFunctionAlways);
-    stencilAlwaysReplace->setStencilFailureOperation(MTL::StencilOperationKeep);
-    stencilAlwaysReplace->setDepthFailureOperation(MTL::StencilOperationKeep);
-    stencilAlwaysReplace->setDepthStencilPassOperation(MTL::StencilOperationReplace);
-    stencilAlwaysReplace->setReadMask(0xFF);
-    stencilAlwaysReplace->setWriteMask(0xFF);
+    // Single-pass shadow exclusion: stencil EQUAL(ref=0) + INCREMENT(clamped),
+    // gated by the normal depth test (LessEqual) so a shadow poly occluded by
+    // closer solid geometry fails the depth test and Keep's the stencil
+    // unmarked there. A polygon only passes the stencil test -- and thus only
+    // blends its (1-srcAlpha) darken into the framebuffer -- if no earlier
+    // overlapping polygon already incremented this pixel's stencil to 1 this
+    // pass. IncrementClamp matches GL_INCR (clamps at 0xFF, never wraps) --
+    // GLDepthStencilState.hpp's StencilEqualZeroIncr. The encoder's stencil
+    // reference is never changed from Metal's default (0): depthStateTL/
+    // TLNoWrite's ALWAYS+REPLACE(ref=0) on every ordinary draw is what resets
+    // this to a fresh 0 for the next shadow draw, every frame -- no
+    // BeginShadowPass/EndShadowPass bracket needed (see DrawSectionTL's doc
+    // comment).
+    MTL::StencilDescriptor* stencilEqualZeroIncrement = MTL::StencilDescriptor::alloc()->init();
+    stencilEqualZeroIncrement->setStencilCompareFunction(MTL::CompareFunctionEqual);
+    stencilEqualZeroIncrement->setStencilFailureOperation(MTL::StencilOperationKeep);
+    stencilEqualZeroIncrement->setDepthFailureOperation(MTL::StencilOperationKeep);
+    stencilEqualZeroIncrement->setDepthStencilPassOperation(MTL::StencilOperationIncrementClamp);
+    stencilEqualZeroIncrement->setReadMask(0xFF);
+    stencilEqualZeroIncrement->setWriteMask(0xFF);
 
-    MTL::DepthStencilDescriptor* depthDescShadowMark = MTL::DepthStencilDescriptor::alloc()->init();
-    depthDescShadowMark->setDepthCompareFunction(MTL::CompareFunctionLessEqual);
-    depthDescShadowMark->setDepthWriteEnabled(false);
-    depthDescShadowMark->setFrontFaceStencil(stencilAlwaysReplace);
-    depthDescShadowMark->setBackFaceStencil(stencilAlwaysReplace);
-    _impl->depthStateShadowMark = _impl->device->newDepthStencilState(depthDescShadowMark);
-    depthDescShadowMark->release();
-    stencilAlwaysReplace->release();
-
-    // Shadow DARKEN phase: stencil EQUAL(ref)+KEEP, depth test disabled --
-    // EndShadowPass's single fullscreen quad darkens exactly the pixels the
-    // mark phase stamped this frame, with color writes on this time. No
-    // depth test (a screen-space quad has nothing meaningful to test against)
-    // and KEEP leaves the mask untouched -- depthStateTL/TLNoWrite's
-    // ALWAYS+REPLACE(ref=0) on ordinary draws is what actually clears it
-    // back to a fresh slate, once the encoder's reference is restored to 0
-    // after EndShadowPass.
-    MTL::StencilDescriptor* stencilEqualKeep = MTL::StencilDescriptor::alloc()->init();
-    stencilEqualKeep->setStencilCompareFunction(MTL::CompareFunctionEqual);
-    stencilEqualKeep->setStencilFailureOperation(MTL::StencilOperationKeep);
-    stencilEqualKeep->setDepthFailureOperation(MTL::StencilOperationKeep);
-    stencilEqualKeep->setDepthStencilPassOperation(MTL::StencilOperationKeep);
-    stencilEqualKeep->setReadMask(0xFF);
-    stencilEqualKeep->setWriteMask(0xFF);
-
-    MTL::DepthStencilDescriptor* depthDescShadowDarken = MTL::DepthStencilDescriptor::alloc()->init();
-    depthDescShadowDarken->setDepthCompareFunction(MTL::CompareFunctionAlways);
-    depthDescShadowDarken->setDepthWriteEnabled(false);
-    depthDescShadowDarken->setFrontFaceStencil(stencilEqualKeep);
-    depthDescShadowDarken->setBackFaceStencil(stencilEqualKeep);
-    _impl->depthStateShadowDarken = _impl->device->newDepthStencilState(depthDescShadowDarken);
-    depthDescShadowDarken->release();
-    stencilEqualKeep->release();
+    MTL::DepthStencilDescriptor* depthDescShadow = MTL::DepthStencilDescriptor::alloc()->init();
+    depthDescShadow->setDepthCompareFunction(MTL::CompareFunctionLessEqual);
+    depthDescShadow->setDepthWriteEnabled(false);
+    depthDescShadow->setFrontFaceStencil(stencilEqualZeroIncrement);
+    depthDescShadow->setBackFaceStencil(stencilEqualZeroIncrement);
+    _impl->depthStateShadow = _impl->device->newDepthStencilState(depthDescShadow);
+    depthDescShadow->release();
+    stencilEqualZeroIncrement->release();
 }
 
 void EngineMTLBootstrap::EnsureTLPipeline()
@@ -679,8 +664,8 @@ void EngineMTLBootstrap::EnsureTLPipeline()
         library->newFunction(NS::String::string("fsMeshOpaque", NS::StringEncoding::UTF8StringEncoding));
     MTL::Function* fsFnBlend =
         library->newFunction(NS::String::string("fsMeshBlend", NS::StringEncoding::UTF8StringEncoding));
-    MTL::Function* fsFnShadowMark =
-        library->newFunction(NS::String::string("fsShadowMark", NS::StringEncoding::UTF8StringEncoding));
+    MTL::Function* fsFnShadow =
+        library->newFunction(NS::String::string("fsShadow", NS::StringEncoding::UTF8StringEncoding));
 
     MTL::RenderPipelineDescriptor* desc = MTL::RenderPipelineDescriptor::alloc()->init();
     desc->setVertexFunction(vsFn);
@@ -720,18 +705,24 @@ void EngineMTLBootstrap::EnsureTLPipeline()
                   error ? error->localizedDescription()->utf8String() : "(unknown)");
     }
 
-    // Shadow MARK variant: vsMesh/fsShadowMark, color writes off (BeginShadow
-    // Pass/EndShadowPass's mark phase -- see those methods and Impl's
-    // pipelineStateShadowMark comment). No blending needed since nothing is
-    // written to the framebuffer.
-    desc->setFragmentFunction(fsFnShadowMark);
-    colorDesc->setBlendingEnabled(false);
-    colorDesc->setWriteMask(MTL::ColorWriteMaskNone);
+    // Single-pass shadow variant: vsMesh/fsShadow, color writes ON, Shadow
+    // blend factors (Zero, OneMinusSourceAlpha) -- paired with
+    // depthStateShadow's stencil EQUAL 0 + INCREMENT (see fsShadow's and
+    // Impl::pipelineStateTLShadow's doc comments for why this is one pass).
+    desc->setFragmentFunction(fsFnShadow);
+    colorDesc->setWriteMask(MTL::ColorWriteMaskAll);
+    colorDesc->setBlendingEnabled(true);
+    colorDesc->setRgbBlendOperation(MTL::BlendOperationAdd);
+    colorDesc->setAlphaBlendOperation(MTL::BlendOperationAdd);
+    colorDesc->setSourceRGBBlendFactor(MTL::BlendFactorZero);
+    colorDesc->setSourceAlphaBlendFactor(MTL::BlendFactorOne);
+    colorDesc->setDestinationRGBBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
+    colorDesc->setDestinationAlphaBlendFactor(MTL::BlendFactorZero);
 
-    _impl->pipelineStateShadowMark = _impl->device->newRenderPipelineState(desc, &error);
-    if (_impl->pipelineStateShadowMark == nullptr)
+    _impl->pipelineStateTLShadow = _impl->device->newRenderPipelineState(desc, &error);
+    if (_impl->pipelineStateTLShadow == nullptr)
     {
-        LOG_ERROR(Graphics, "EngineMTLBootstrap: shadow mark pipeline state creation failed: {}",
+        LOG_ERROR(Graphics, "EngineMTLBootstrap: TL shadow pipeline state creation failed: {}",
                   error ? error->localizedDescription()->utf8String() : "(unknown)");
     }
 
@@ -739,7 +730,7 @@ void EngineMTLBootstrap::EnsureTLPipeline()
     vsFn->release();
     fsFnOpaque->release();
     fsFnBlend->release();
-    fsFnShadowMark->release();
+    fsFnShadow->release();
     library->release();
 }
 
@@ -854,9 +845,9 @@ bool EngineMTLBootstrap::BeginFrame(float r, float g, float b, float a, bool cle
         depthAttachment->setClearDepth(1.0);
 
         // Stencil plane of the same combined Depth32Float_Stencil8 texture --
-        // cleared alongside depth (same cadence: the shadow mark/darken
-        // scheme needs a clean per-pixel slate each time depth resets, see
-        // BeginShadowPass/EndShadowPass).
+        // cleared alongside depth (same cadence: the single-pass shadow
+        // exclusion scheme needs a clean per-pixel slate each time depth
+        // resets, see depthStateShadow's doc comment).
         MTL::RenderPassStencilAttachmentDescriptor* stencilAttachment = passDesc->stencilAttachment();
         stencilAttachment->setTexture(_impl->depthTexture);
         stencilAttachment->setLoadAction(clearZ ? MTL::LoadActionClear : MTL::LoadActionLoad);
@@ -888,8 +879,8 @@ bool EngineMTLBootstrap::BeginFrame(float r, float g, float b, float a, bool cle
 }
 
 void EngineMTLBootstrap::DrawTriangles2D(const Vertex2DMTL* verts, int vertCount, const uint16_t* indices,
-                                         int indexCount, int textureHandle, int clipX, int clipY, int clipW,
-                                         int clipH)
+                                         int indexCount, int textureHandle, int clipX, int clipY, int clipW, int clipH,
+                                         Poseidon::render::DepthMode depthMode, Poseidon::render::BlendMode blendMode)
 {
     if (_impl->currentEncoder == nullptr || vertCount <= 0 || indexCount <= 0)
         return;
@@ -897,8 +888,17 @@ void EngineMTLBootstrap::DrawTriangles2D(const Vertex2DMTL* verts, int vertCount
     // Explicit rebind, not inherited from BeginFrame's initial bind -- a
     // DrawSectionTL call earlier in this same encoder would otherwise leave
     // the mesh pipeline/depth-test state bound for this 2D draw.
-    _impl->currentEncoder->setRenderPipelineState(_impl->pipelineState);
-    _impl->currentEncoder->setDepthStencilState(_impl->depthStateDisabled);
+    //
+    // Only BlendMode::Shadow/DepthMode::Shadow resolve to anything other than
+    // the default pipeline/depth state -- see this method's header doc
+    // comment. That single case is the legacy/2D fan-draw path's shadow
+    // polys (most real shadow casters take this path, not DrawSectionTL --
+    // see Shadow.cpp's Object::DrawShadow), using the same single-pass
+    // stencil-exclusion scheme as the TL path's fsShadow/depthStateShadow.
+    const bool isShadow =
+        blendMode == Poseidon::render::BlendMode::Shadow || depthMode == Poseidon::render::DepthMode::Shadow;
+    _impl->currentEncoder->setRenderPipelineState(isShadow ? _impl->pipelineState2DShadow : _impl->pipelineState);
+    _impl->currentEncoder->setDepthStencilState(isShadow ? _impl->depthStateShadow : _impl->depthStateDisabled);
 
     // Clamp to the drawable -- Metal's setScissorRect raises a validation
     // error if the rect extends past the render target.
@@ -1033,14 +1033,14 @@ void EngineMTLBootstrap::DestroyMeshBufferDeferred(int handle)
 
 void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHandle, int firstIndex, int indexCount,
                                        int textureHandle, const ObjectConstantsMTL& obj, const FrameConstantsMTL& frame,
-                                       bool blendEnabled, bool noZWrite, bool isShadow)
+                                       Poseidon::render::DepthMode depthMode, Poseidon::render::BlendMode blendMode)
 {
     if (_impl->currentEncoder == nullptr || indexCount <= 0)
         return;
 
     EnsureTLPipeline();
     if (_impl->pipelineStateTL == nullptr || _impl->pipelineStateTLBlend == nullptr ||
-        _impl->pipelineStateShadowMark == nullptr)
+        _impl->pipelineStateTLShadow == nullptr)
         return;
 
     if (vertexBufferHandle <= 0 || static_cast<size_t>(vertexBufferHandle) > _impl->meshBuffers.size())
@@ -1061,34 +1061,43 @@ void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHa
     }
 
     // Explicit rebind -- see DrawTriangles2D's matching comment: draw order
-    // between the two paths within one encoder is not guaranteed. Pipeline
-    // choice mirrors GL33's opaque-pass/BlendOnly-pass split (see this
-    // method's header comment) -- blendEnabled is true only for sections
-    // whose texture is true AlphaStats::Blend. isShadow takes the dedicated
-    // mark-phase pipeline/depth-stencil state (see BeginShadowPass's doc
-    // comment) regardless of blendEnabled/noZWrite -- caller must only set
-    // isShadow=true between BeginShadowPass()/EndShadowPass().
-    if (isShadow)
-    {
-        _impl->currentEncoder->setRenderPipelineState(_impl->pipelineStateShadowMark);
-        _impl->currentEncoder->setDepthStencilState(_impl->depthStateShadowMark);
-    }
-    else
-    {
-        _impl->currentEncoder->setRenderPipelineState(blendEnabled ? _impl->pipelineStateTLBlend
-                                                                    : _impl->pipelineStateTL);
-        // AlphaStats' doc comment states the rule this mirrors: Blend sections
-        // "must be deferred to the back-to-front pass" and never occlude/write
-        // depth -- only Opaque/Cutout do. blendEnabled covers every Blend-
-        // classified section (wreck rust-holes, glass, the foliage/fence
-        // textures fixed alongside this), not just NoZWrite ones: multiple
-        // overlapping Blend panels on the same mesh (e.g. an M113/jeep wreck's
-        // several rust-holed body sections) each writing their own depth would
-        // z-fight against each other and let the interior show through
-        // unpredictably depending on draw/section order.
-        _impl->currentEncoder->setDepthStencilState((blendEnabled || noZWrite) ? _impl->depthStateTLNoWrite
-                                                                                : _impl->depthStateTL);
-    }
+    // between the two paths within one encoder is not guaranteed.
+    //
+    // Pipeline choice mirrors GL33's opaque-pass/BlendOnly-pass split:
+    // BlendMode::AlphaBlend is true Blend-classified sections (AlphaStats::
+    // Blend's doc comment: "must be deferred to the back-to-front pass" and
+    // never occlude/write depth -- only Opaque/Cutout do); BlendMode::Shadow
+    // is the single-pass shadow scheme (see fsShadow's doc comment); anything
+    // else (Opaque, or a descriptor mode this path doesn't have a pipeline
+    // for yet) falls back to the no-blend Opaque/Cutout pipeline.
+    /// TODO: BlendMode::Additive (light volumes) and ShaderFamily::Water/
+    /// Detail/Grass don't have a real pipeline yet -- see
+    /// BuildRenderPassDescriptor.hpp. Anything that resolves to one of those
+    /// today silently falls back to Opaque here instead of failing loudly.
+    MTL::RenderPipelineState* pipeline = _impl->pipelineStateTL;
+    if (blendMode == Poseidon::render::BlendMode::Shadow)
+        pipeline = _impl->pipelineStateTLShadow;
+    else if (blendMode == Poseidon::render::BlendMode::AlphaBlend)
+        pipeline = _impl->pipelineStateTLBlend;
+    _impl->currentEncoder->setRenderPipelineState(pipeline);
+
+    // Depth state: DepthMode::Shadow gets the stencil-exclusion state
+    // (depthStateShadow); ReadOnly (Blend sections, and NoZWrite sections
+    // such as the legacy spec's shadow-adjacent decals) gets depth-test-only;
+    // everything else (Normal, or a mode without a dedicated state yet) gets
+    // the ordinary test+write state. Multiple overlapping Blend panels on the
+    // same mesh (e.g. an M113/jeep wreck's several rust-holed body sections)
+    // each writing their own depth would z-fight against each other and let
+    // the interior show through unpredictably depending on draw/section
+    // order -- ReadOnly avoids that.
+    MTL::DepthStencilState* depthState = _impl->depthStateTL;
+    if (depthMode == Poseidon::render::DepthMode::Shadow)
+        depthState = _impl->depthStateShadow;
+    else if (depthMode == Poseidon::render::DepthMode::ReadOnly)
+        depthState = _impl->depthStateTLNoWrite;
+    else if (depthMode == Poseidon::render::DepthMode::Disabled)
+        depthState = _impl->depthStateDisabled;
+    _impl->currentEncoder->setDepthStencilState(depthState);
     // Metal's cull mode defaults to None (draw both faces) and was never set
     // anywhere in this backend -- meshes with closed/solid hulls (e.g. the
     // M113's interior) showed their back-facing interior walls through gaps
@@ -1114,62 +1123,6 @@ void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHa
     const NS::UInteger offsetBytes = static_cast<NS::UInteger>(firstIndex) * sizeof(uint16_t);
     _impl->currentEncoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, static_cast<NS::UInteger>(indexCount),
                                                  MTL::IndexTypeUInt16, ibuf, offsetBytes);
-}
-
-void EngineMTLBootstrap::BeginShadowPass()
-{
-    if (_impl->currentEncoder == nullptr)
-        return;
-    // Pinned for the whole bracket -- every isShadow DrawSectionTL call until
-    // EndShadowPass uses depthStateShadowMark's ALWAYS+REPLACE(ref) op.
-    _impl->currentEncoder->setStencilReferenceValue(0xFF);
-}
-
-void EngineMTLBootstrap::EndShadowPass(float shadowFactor)
-{
-    if (_impl->currentEncoder == nullptr || _impl->device == nullptr)
-        return;
-
-    // shadowFactor <= 0 means shadows are fully off this frame -- skip the
-    // draw, nothing was marked worth darkening anyway.
-    if (shadowFactor > 0.0f && _impl->pipelineState2DShadowDarken != nullptr &&
-        _impl->depthStateShadowDarken != nullptr && _impl->fallbackWhite != nullptr)
-    {
-        // Fullscreen NDC quad; vertex color carries the darken alpha (uv/rgb
-        // unused -- fs2d samples fallbackWhite, a 1x1 opaque-white texture,
-        // so texColor*color collapses to (0,0,0,shadowFactor), see Impl's
-        // pipelineState2DShadowDarken comment).
-        const Vertex2DMTL verts[4] = {
-            {-1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, shadowFactor},
-            {1.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, shadowFactor},
-            {1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, shadowFactor},
-            {-1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, shadowFactor},
-        };
-        const uint16_t indices[6] = {0, 1, 2, 0, 2, 3};
-
-        MTL::Buffer* vbuf = _impl->device->newBuffer(verts, sizeof(verts), MTL::ResourceStorageModeShared);
-        MTL::Buffer* ibuf = _impl->device->newBuffer(indices, sizeof(indices), MTL::ResourceStorageModeShared);
-
-        _impl->currentEncoder->setRenderPipelineState(_impl->pipelineState2DShadowDarken);
-        _impl->currentEncoder->setDepthStencilState(_impl->depthStateShadowDarken);
-        MTL::ScissorRect scissor;
-        scissor.x = 0;
-        scissor.y = 0;
-        scissor.width = static_cast<NS::UInteger>(_impl->drawableWidth);
-        scissor.height = static_cast<NS::UInteger>(_impl->drawableHeight);
-        _impl->currentEncoder->setScissorRect(scissor);
-        _impl->currentEncoder->setVertexBuffer(vbuf, 0, 0);
-        _impl->currentEncoder->setFragmentTexture(_impl->fallbackWhite, 0);
-        _impl->currentEncoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, 6, MTL::IndexTypeUInt16, ibuf, 0);
-
-        vbuf->release();
-        ibuf->release();
-    }
-
-    // Restore the reference for ordinary draws -- depthStateTL/TLNoWrite's
-    // ALWAYS+REPLACE(ref=0) is what actually clears the mask back to a clean
-    // slate ahead of next frame's shadow pass.
-    _impl->currentEncoder->setStencilReferenceValue(0);
 }
 
 int EngineMTLBootstrap::CreateTexture(int width, int height, const uint8_t* rgba)
@@ -1264,15 +1217,15 @@ void EngineMTLBootstrap::Shutdown()
         _impl->pipelineStateTLBlend->release();
         _impl->pipelineStateTLBlend = nullptr;
     }
-    if (_impl->pipelineStateShadowMark != nullptr)
+    if (_impl->pipelineStateTLShadow != nullptr)
     {
-        _impl->pipelineStateShadowMark->release();
-        _impl->pipelineStateShadowMark = nullptr;
+        _impl->pipelineStateTLShadow->release();
+        _impl->pipelineStateTLShadow = nullptr;
     }
-    if (_impl->pipelineState2DShadowDarken != nullptr)
+    if (_impl->pipelineState2DShadow != nullptr)
     {
-        _impl->pipelineState2DShadowDarken->release();
-        _impl->pipelineState2DShadowDarken = nullptr;
+        _impl->pipelineState2DShadow->release();
+        _impl->pipelineState2DShadow = nullptr;
     }
     if (_impl->depthStateTL != nullptr)
     {
@@ -1289,15 +1242,10 @@ void EngineMTLBootstrap::Shutdown()
         _impl->depthStateTLNoWrite->release();
         _impl->depthStateTLNoWrite = nullptr;
     }
-    if (_impl->depthStateShadowMark != nullptr)
+    if (_impl->depthStateShadow != nullptr)
     {
-        _impl->depthStateShadowMark->release();
-        _impl->depthStateShadowMark = nullptr;
-    }
-    if (_impl->depthStateShadowDarken != nullptr)
-    {
-        _impl->depthStateShadowDarken->release();
-        _impl->depthStateShadowDarken = nullptr;
+        _impl->depthStateShadow->release();
+        _impl->depthStateShadow = nullptr;
     }
     if (_impl->depthTexture != nullptr)
     {

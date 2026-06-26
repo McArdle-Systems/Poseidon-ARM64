@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Poseidon/Graphics/Rendering/RenderPassDescriptor.hpp>
+
 #include <cstdint>
 #include <string>
 
@@ -158,8 +160,24 @@ class EngineMTLBootstrap
     // scissor rect for this draw -- simpler than GL33's manual per-vertex UV
     // clip-rect remapping, since Metal does the pixel-discard for free.
     // Must be called between BeginFrame/EndFrame.
+    //
+    // `depthMode`/`blendMode` select the depth-stencil/pipeline state, same
+    // enums `BuildRenderPassDescriptor` produces -- defaulted to this
+    // pipeline's traditional always-on alpha blend with no real depth test,
+    // so ordinary 2D/UI callers (Draw2D/DrawPoly/DrawLine) are unaffected.
+    // Only DepthMode::Shadow/BlendMode::Shadow currently resolve to anything
+    // other than the default pipelineState/depthStateDisabled pair -- see
+    // EngineMTLBootstrap.cpp's DrawTriangles2D body. Other modes fall back to
+    // the default rather than silently misrendering.
+    /// TODO: Normal/ReadOnly/Disabled DepthMode and Additive/AlphaBlend
+    /// BlendMode aren't independently resolved here yet -- this path only
+    /// distinguishes "ordinary 2D" from "shadow". Generalize if a caller
+    /// other than the legacy shadow fan-draw ever needs a real depth test or
+    /// additive blending through DrawTriangles2D.
     void DrawTriangles2D(const Vertex2DMTL* verts, int vertCount, const uint16_t* indices, int indexCount,
-                         int textureHandle, int clipX, int clipY, int clipW, int clipH);
+                         int textureHandle, int clipX, int clipY, int clipW, int clipH,
+                         Poseidon::render::DepthMode depthMode = Poseidon::render::DepthMode::Disabled,
+                         Poseidon::render::BlendMode blendMode = Poseidon::render::BlendMode::AlphaBlend);
 
     // Ends encoding, presents the drawable, commits the command buffer.
     void EndFrame();
@@ -217,53 +235,29 @@ class EngineMTLBootstrap
     // explicitly rebind their own pipeline/depth state so draw order doesn't
     // matter.
     //
-    // `blendEnabled` selects which of the two TL pipeline variants binds for
-    // this section, mirroring GL33's per-section opaque/blend split
-    // (ShapeDraw.cpp's GSectionFilter routing + SceneDraw.cpp's BlendOnly
-    // pass): true Blend sections (AlphaStats::Blend) draw with blending on
-    // and texColor.a folded into the output alpha; every other section
-    // (Opaque or Cutout) draws with blending off, so texture-alpha noise in
-    // ordinary diffuse textures never makes part of the model see-through.
-    // `noZWrite` mirrors the legacy spec's Backend::NoZWrite bit (set on every
-    // shadow polygon by Shadow.cpp's MakeShadow): depth test stays on (still
-    // occluded correctly) but the write is skipped, so a shadow drawn before
-    // its own caster in submission order can't win the depth test and make
-    // the caster fail depth-test against it afterwards.
+    // `depthMode`/`blendMode` are the same enums `BuildRenderPassDescriptor`
+    // produces from a section's `LegacySpec` -- the caller (EngineMTL)
+    // resolves the descriptor and passes its fields straight through rather
+    // than re-deriving ad hoc booleans from spec bits itself. Only
+    // Normal/ReadOnly/Shadow depth modes and Opaque/AlphaBlend/Shadow blend
+    // modes currently map to a real pipeline/depth-stencil state (see
+    // EngineMTLBootstrap.cpp); other combinations fall back to the nearest
+    // equivalent with a logged warning.
     //
-    // `isShadow` (Backend::IsShadow) routes to the shadow stencil-MARK
-    // pipeline/depth-stencil state instead of the ordinary blend path --
-    // color writes off, stencil ALWAYS+REPLACE(0xFF) gated by the normal
-    // depth test (so a shadow occluded by closer solid geometry doesn't
-    // mark the stencil there). This must be called only between
-    // BeginShadowPass()/EndShadowPass(): those brackets are what actually
-    // darken the framebuffer (a single fullscreen quad gated on the stencil
-    // mask), exactly once per pixel regardless of how many overlapping
-    // pieces a caster's shadow mesh has, or how many different casters'
-    // shadows land on the same pixel -- see BeginShadowPass's doc comment.
+    // BlendMode::Shadow + DepthMode::Shadow is GL33's actual single-pass
+    // per-polygon shadow scheme (see Engine::BeginShadowPass's updated doc
+    // comment, Engine.hpp): stencil EQUAL 0 + INCREMENT gates the Shadow
+    // blend factors in this one draw call, so a shadow polygon either
+    // darkens the framebuffer and marks the stencil, or is rejected outright
+    // if an earlier overlapping polygon already marked that pixel this pass.
+    // No separate mark/darken phases, no fullscreen quad, and no
+    // BeginShadowPass/EndShadowPass bracket needed -- the stencil reference
+    // stays at Metal's default (0) for the whole frame, which is exactly
+    // what both this EQUAL-0 test and every ordinary draw's ALWAYS+REPLACE
+    // reset want.
     void DrawSectionTL(int vertexBufferHandle, int indexBufferHandle, int firstIndex, int indexCount,
                        int textureHandle, const ObjectConstantsMTL& obj, const FrameConstantsMTL& frame,
-                       bool blendEnabled, bool noZWrite, bool isShadow);
-
-    // Shadow pipeline, mirroring GL33's EngineGL33::BeginShadowPass/
-    // EndShadowPass (EngineGL33_Draw.cpp) and the contract documented on
-    // Engine::BeginShadowPass (Engine.hpp): wraps the whole frame's
-    // per-caster shadow draw loop (Scene::DrawObjectsAndShadowsPass2), not
-    // one caster at a time.
-    //
-    // BeginShadowPass(): sets the stencil reference to 0xFF for the
-    // duration of the bracket. Every DrawSectionTL(..., isShadow=true) call
-    // until EndShadowPass() only stamps the stencil mask (color writes off,
-    // alpha-cutout discard so foliage gaps don't phantom-stamp) -- nothing
-    // visible happens yet, so overlapping shadow casters/pieces stamping the
-    // same pixel multiple times is harmless (REPLACE is idempotent).
-    //
-    // EndShadowPass(shadowFactor): draws one fullscreen quad, stencil-gated
-    // (EQUAL 0xFF), blended (Zero, OneMinusSourceAlpha) to darken every
-    // marked pixel by (1 - shadowFactor) exactly once -- then restores the
-    // stencil reference to 0 so subsequent ordinary draws resume resetting
-    // the mask for the next frame's shadow pass.
-    void BeginShadowPass();
-    void EndShadowPass(float shadowFactor);
+                       Poseidon::render::DepthMode depthMode, Poseidon::render::BlendMode blendMode);
 
   private:
     bool SetupDevice(); // shared by Init() and AttachToWindow()
