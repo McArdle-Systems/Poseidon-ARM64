@@ -7,6 +7,7 @@
 #include <Poseidon/Graphics/Textures/ImageContainer.hpp>
 #include <Poseidon/Asset/Probes/AssetInfo.hpp>
 #include <Poseidon/Asset/Probes/AssetPreview.hpp>
+#include <fstream>
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -81,6 +82,28 @@ static void setupImageInspect(CLI::App& image)
                           << "%  partial 0<a<255: " << a.pctPartial << "%)" << std::endl;
                 std::cout << "Classification: " << Poseidon::AlphaKindName(a.kind) << std::endl;
                 std::cout << "  -> route: " << route << std::endl;
+            }
+
+            // Full mip chain (every level the file actually stores) -- the
+            // buffer-based decode the Metal renderer's texture loader uses
+            // for real GPU mip chains (engine/Poseidon/Graphics/Textures/
+            // PAADecoder.cpp's DecodePAABufferAllMips), surfaced here so a
+            // mismatch against the header's `Mipmaps:` count is visible.
+            std::ifstream f(inputPath, std::ios::binary | std::ios::ate);
+            if (f.good())
+            {
+                const auto fileSize = f.tellg();
+                f.seekg(0, std::ios::beg);
+                std::vector<char> fileData(static_cast<size_t>(fileSize));
+                f.read(fileData.data(), fileSize);
+                const bool isPaaExt = inputPath.size() >= 4 &&
+                                     (inputPath.back() == 'a' || inputPath.back() == 'A');
+                const Poseidon::DecodedImageChain chain =
+                    Poseidon::DecodePAABufferAllMips(fileData.data(), fileData.size(), isPaaExt);
+                std::cout << "Mip chain (decoded): " << chain.levels.size() << " level(s)";
+                for (const auto& lvl : chain.levels)
+                    std::cout << " " << lvl.width << "x" << lvl.height;
+                std::cout << std::endl;
             }
         });
 }

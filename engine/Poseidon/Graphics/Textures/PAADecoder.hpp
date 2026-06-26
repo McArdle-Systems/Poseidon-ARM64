@@ -54,6 +54,28 @@ DecodedImage DecodePAAFileMip(const std::string& path, int mipLevel);
 // Decode from memory buffer (for embedded/archive use)
 DecodedImage DecodePAABuffer(const void* data, size_t size, bool isPaa);
 
+// Every mip level decoded from one PAA/PAC buffer, levels[0] = top (full-res).
+// hasAlphaChannel/oneBitAlpha/isChromaKey are format-level facts shared by
+// every level (same source format, same palette), so they live once at the
+// chain level rather than duplicated per-level -- mirrors DecodedImage's
+// fields for the equivalent single-level case.
+struct DecodedImageChain
+{
+    std::vector<DecodedImage> levels;
+    bool hasAlphaChannel = false;
+    bool oneBitAlpha = false;
+    bool isChromaKey = false;
+    bool valid() const { return !levels.empty() && levels[0].valid(); }
+};
+
+// Decode every mip level stored in a PAA/PAC buffer (in-game equivalent of
+// DecodePAAFileMip's per-level loop, but buffer-based -- live asset loading
+// goes through the VFS into a memory buffer, not a real filesystem path).
+// Levels are walked sequentially (each PacLevelMem::Init() call advances past
+// the previous level's data to the next header), terminating at the format's
+// usual 0x0 mip-list terminator.
+DecodedImageChain DecodePAABufferAllMips(const void* data, size_t size, bool isPaa);
+
 // Three-way alpha classification of a decoded RGBA8888 buffer. This is the
 // per-texture signal a section-sort renderer needs (ArmA1-style): only a Blend
 // texture (partial-alpha texels present) must be deferred to the back-to-front
