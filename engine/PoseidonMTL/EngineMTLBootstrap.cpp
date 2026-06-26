@@ -380,6 +380,10 @@ struct EngineMTLBootstrap::Impl
     // Shadow blend factors instead of the 2D pipeline's normal
     // (SourceAlpha, OneMinusSourceAlpha). Paired with the same depthStateShadow.
     MTL::RenderPipelineState* pipelineState2DShadow = nullptr;
+    // Additive light/flare draws: same shaders as the alpha pipelines, but
+    // GL33's BlendMode::Additive factors (SRC_ALPHA, ONE).
+    MTL::RenderPipelineState* pipelineState2DAdditive = nullptr;
+    MTL::RenderPipelineState* pipelineStateTLAdditive = nullptr;
     // Depth test+write for 3D mesh draws, vs. always-pass/no-write for 2D UI
     // draws sharing the same encoder/pass -- both pipelines declare the same
     // depthAttachmentPixelFormat (required by Metal once the pass has a
@@ -658,6 +662,21 @@ void EngineMTLBootstrap::EnsurePipeline()
                   error ? error->localizedDescription()->utf8String() : "(unknown)");
     }
 
+    // Additive variant for light flares and similar screen/decal draws:
+    // GL33's BlendMode::Additive is SRC_ALPHA, ONE for RGB and ONE, ZERO
+    // for destination alpha (GLBlendState.hpp).
+    colorDesc->setSourceRGBBlendFactor(MTL::BlendFactorSourceAlpha);
+    colorDesc->setSourceAlphaBlendFactor(MTL::BlendFactorOne);
+    colorDesc->setDestinationRGBBlendFactor(MTL::BlendFactorOne);
+    colorDesc->setDestinationAlphaBlendFactor(MTL::BlendFactorZero);
+
+    _impl->pipelineState2DAdditive = _impl->device->newRenderPipelineState(desc, &error);
+    if (_impl->pipelineState2DAdditive == nullptr)
+    {
+        LOG_ERROR(Graphics, "EngineMTLBootstrap: 2D additive pipeline state creation failed: {}",
+                  error ? error->localizedDescription()->utf8String() : "(unknown)");
+    }
+
     // Single-pass shadow variant for the legacy/2D fan-draw path: same
     // vs2d/fs2d functions, but Shadow blend factors (Zero, OneMinusSourceAlpha)
     // instead of the 2D pipeline's normal (SourceAlpha, OneMinusSourceAlpha)
@@ -839,6 +858,19 @@ void EngineMTLBootstrap::EnsureTLPipeline()
     if (_impl->pipelineStateTLBlend == nullptr)
     {
         LOG_ERROR(Graphics, "EngineMTLBootstrap: mesh blend pipeline state creation failed: {}",
+                  error ? error->localizedDescription()->utf8String() : "(unknown)");
+    }
+
+    // Additive variant for IsLight / flare-style mesh sections.
+    colorDesc->setSourceRGBBlendFactor(MTL::BlendFactorSourceAlpha);
+    colorDesc->setSourceAlphaBlendFactor(MTL::BlendFactorOne);
+    colorDesc->setDestinationRGBBlendFactor(MTL::BlendFactorOne);
+    colorDesc->setDestinationAlphaBlendFactor(MTL::BlendFactorZero);
+
+    _impl->pipelineStateTLAdditive = _impl->device->newRenderPipelineState(desc, &error);
+    if (_impl->pipelineStateTLAdditive == nullptr)
+    {
+        LOG_ERROR(Graphics, "EngineMTLBootstrap: mesh additive pipeline state creation failed: {}",
                   error ? error->localizedDescription()->utf8String() : "(unknown)");
     }
 
@@ -1040,7 +1072,12 @@ void EngineMTLBootstrap::DrawTriangles2D(const Vertex2DMTL* verts, int vertCount
     // stencil-exclusion scheme as the TL path's fsShadow/depthStateShadow.
     const bool isShadow =
         blendMode == Poseidon::render::BlendMode::Shadow || depthMode == Poseidon::render::DepthMode::Shadow;
-    _impl->currentEncoder->setRenderPipelineState(isShadow ? _impl->pipelineState2DShadow : _impl->pipelineState);
+    MTL::RenderPipelineState* pipeline = _impl->pipelineState;
+    if (isShadow)
+        pipeline = _impl->pipelineState2DShadow;
+    else if (blendMode == Poseidon::render::BlendMode::Additive && _impl->pipelineState2DAdditive != nullptr)
+        pipeline = _impl->pipelineState2DAdditive;
+    _impl->currentEncoder->setRenderPipelineState(pipeline);
     _impl->currentEncoder->setDepthStencilState(isShadow ? _impl->depthStateShadow : _impl->depthStateDisabled);
     _impl->currentEncoder->setFragmentSamplerState(_impl->samplerStates[SamplerIndex(sampler)], 0);
     SetDepthBiasForDescriptor(_impl->currentEncoder, surface, isShadow ? Poseidon::render::ShaderFamily::Shadow
@@ -1188,6 +1225,7 @@ void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHa
 
     EnsureTLPipeline();
     if (_impl->pipelineStateTL == nullptr || _impl->pipelineStateTLBlend == nullptr ||
+        _impl->pipelineStateTLAdditive == nullptr ||
         _impl->pipelineStateTLShadow == nullptr)
         return;
 
@@ -1218,13 +1256,14 @@ void EngineMTLBootstrap::DrawSectionTL(int vertexBufferHandle, int indexBufferHa
     // is the single-pass shadow scheme (see fsShadow's doc comment); anything
     // else (Opaque, or a descriptor mode this path doesn't have a pipeline
     // for yet) falls back to the no-blend Opaque/Cutout pipeline.
-    /// TODO: BlendMode::Additive (light volumes) and ShaderFamily::Water/
-    /// Detail/Grass don't have a real pipeline yet -- see
+    /// TODO: ShaderFamily::Water/Detail/Grass don't have a real pipeline yet -- see
     /// BuildRenderPassDescriptor.hpp. Anything that resolves to one of those
     /// today silently falls back to Opaque here instead of failing loudly.
     MTL::RenderPipelineState* pipeline = _impl->pipelineStateTL;
     if (blendMode == Poseidon::render::BlendMode::Shadow)
         pipeline = _impl->pipelineStateTLShadow;
+    else if (blendMode == Poseidon::render::BlendMode::Additive)
+        pipeline = _impl->pipelineStateTLAdditive;
     else if (blendMode == Poseidon::render::BlendMode::AlphaBlend)
         pipeline = _impl->pipelineStateTLBlend;
     _impl->currentEncoder->setRenderPipelineState(pipeline);
@@ -1405,10 +1444,20 @@ void EngineMTLBootstrap::Shutdown()
         _impl->pipelineStateTLBlend->release();
         _impl->pipelineStateTLBlend = nullptr;
     }
+    if (_impl->pipelineStateTLAdditive != nullptr)
+    {
+        _impl->pipelineStateTLAdditive->release();
+        _impl->pipelineStateTLAdditive = nullptr;
+    }
     if (_impl->pipelineStateTLShadow != nullptr)
     {
         _impl->pipelineStateTLShadow->release();
         _impl->pipelineStateTLShadow = nullptr;
+    }
+    if (_impl->pipelineState2DAdditive != nullptr)
+    {
+        _impl->pipelineState2DAdditive->release();
+        _impl->pipelineState2DAdditive = nullptr;
     }
     if (_impl->pipelineState2DShadow != nullptr)
     {
