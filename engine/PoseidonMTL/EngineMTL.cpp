@@ -208,8 +208,8 @@ void EngineMTL::PixelToNDC(float px, float py, float& ndcX, float& ndcY) const
     ndcY = _h > 0 ? 1.0f - (py / static_cast<float>(_h)) * 2.0f : 0.0f;
 }
 
-void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* uv, const PackedColor* colors, int n,
-                          int textureHandle,
+void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* rhw, const float* uv,
+                          const PackedColor* colors, int n, int textureHandle,
                           const Rect2DAbs& clip, render::DepthMode depthMode, render::BlendMode blendMode,
                           render::SamplerMode sampler, render::SurfaceMode surface, render::ShaderFamily shader)
 {
@@ -219,9 +219,14 @@ void EngineMTL::DrawFan2D(const float* xy, const float* z, const float* uv, cons
     Vertex2DMTL verts[kMaxPolyVerts];
     for (int i = 0; i < n; i++)
     {
-        PixelToNDC(xy[i * 2], xy[i * 2 + 1], verts[i].x, verts[i].y);
-        verts[i].z = z ? z[i] : 0.0f;
-        verts[i].w = 1.0f;
+        float ndcX = 0.0f;
+        float ndcY = 0.0f;
+        PixelToNDC(xy[i * 2], xy[i * 2 + 1], ndcX, ndcY);
+        const float clipW = (rhw && rhw[i] != 0.0f) ? (1.0f / rhw[i]) : 1.0f;
+        verts[i].x = ndcX * clipW;
+        verts[i].y = ndcY * clipW;
+        verts[i].z = (z ? z[i] : 0.0f) * clipW;
+        verts[i].w = clipW;
         verts[i].u = uv[i * 2];
         verts[i].v = uv[i * 2 + 1];
         verts[i].pad0 = 0.0f;
@@ -261,8 +266,8 @@ void EngineMTL::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect
     const PackedColor colors[4] = {pars.colorTL, pars.colorTR, pars.colorBR, pars.colorBL};
 
     const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(pars.spec));
-    DrawFan2D(xy, nullptr, uv, colors, 4, GpuHandleOf(pars.mip._texture), clip, d.depth, d.blend, d.sampler, d.surface,
-              d.shader);
+    DrawFan2D(xy, nullptr, nullptr, uv, colors, 4, GpuHandleOf(pars.mip._texture), clip, d.depth, d.blend, d.sampler,
+              d.surface, d.shader);
 }
 
 void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& clip,
@@ -284,8 +289,8 @@ void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n,
     }
 
     const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(specFlags));
-    DrawFan2D(xy, nullptr, uv, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, clip, d.depth, d.blend, d.sampler,
-              d.surface, d.shader);
+    DrawFan2D(xy, nullptr, nullptr, uv, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, clip, d.depth, d.blend,
+              d.sampler, d.surface, d.shader);
 }
 
 void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& clip,
@@ -312,8 +317,8 @@ void EngineMTL::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int 
     Rect2DAbs clipAbs;
     Convert(clipAbs, clip);
     const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(specFlags));
-    DrawFan2D(xy, nullptr, uv, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, clipAbs, d.depth, d.blend, d.sampler,
-              d.surface, d.shader);
+    DrawFan2D(xy, nullptr, nullptr, uv, colors, n, mip.IsOK() ? GpuHandleOf(mip._texture) : 0, clipAbs, d.depth,
+              d.blend, d.sampler, d.surface, d.shader);
 }
 
 void EngineMTL::DrawDecal(Vector3Par screen, float /*rhw*/, float sizeX, float sizeY, PackedColor color,
@@ -360,7 +365,7 @@ void EngineMTL::DrawDecal(Vector3Par screen, float /*rhw*/, float sizeX, float s
     const Rect2DAbs clip(0, 0, static_cast<float>(_w), static_cast<float>(_h));
 
     const render::RenderPassDescriptor d = render::BuildRenderPassDescriptor(render::SplitLegacy(specFlags));
-    DrawFan2D(xy, nullptr, uv, colors, 4, GpuHandleOf(mip._texture), clip, d.depth, d.blend, d.sampler, d.surface,
+    DrawFan2D(xy, nullptr, nullptr, uv, colors, 4, GpuHandleOf(mip._texture), clip, d.depth, d.blend, d.sampler, d.surface,
               d.shader);
 }
 
@@ -384,7 +389,7 @@ void EngineMTL::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, 
     const float uv[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     const PackedColor colors[4] = {c0, c0, c1, c1};
 
-    DrawFan2D(xy, nullptr, uv, colors, 4, 0, clip);
+    DrawFan2D(xy, nullptr, nullptr, uv, colors, 4, 0, clip);
 }
 
 void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
@@ -394,6 +399,7 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
 
     float xy[kMaxPolyVerts * 2];
     float z[kMaxPolyVerts];
+    float rhw[kMaxPolyVerts];
     float uv[kMaxPolyVerts * 2];
     PackedColor colors[kMaxPolyVerts];
     for (int k = 0; k < n; k++)
@@ -402,13 +408,14 @@ void EngineMTL::DrawIndexedFan3D(const VertexIndex* indices, int n)
         xy[k * 2] = v.pos.X();
         xy[k * 2 + 1] = v.pos.Y();
         z[k] = v.pos.Z();
+        rhw[k] = v.rhw;
         uv[k * 2] = v.t0.u;
         uv[k * 2 + 1] = v.t0.v;
         colors[k] = v.color;
     }
 
     const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
-    DrawFan2D(xy, z, uv, colors, n, _currentTriTexture, fullScreen, _currentTriDepthMode, _currentTriBlendMode,
+    DrawFan2D(xy, z, rhw, uv, colors, n, _currentTriTexture, fullScreen, _currentTriDepthMode, _currentTriBlendMode,
               _currentTriSampler, _currentTriSurfaceMode, _currentTriShader);
 }
 
@@ -728,7 +735,7 @@ void EngineMTL::DrawLine(int beg, int end)
     const PackedColor colors[4] = {v0.color, v0.color, v1.color, v1.color};
 
     const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
-    DrawFan2D(xy, nullptr, uv, colors, 4, 0, fullScreen);
+    DrawFan2D(xy, nullptr, nullptr, uv, colors, 4, 0, fullScreen);
 }
 
 bool EngineMTL::SwitchRes(int w, int h, int bpp)
