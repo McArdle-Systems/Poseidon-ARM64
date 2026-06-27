@@ -188,12 +188,40 @@ void TextBankMTL::EnsureBudgetInitialized()
     _maxTextureMemory = static_cast<int64_t>(recommended);
 }
 
+void TextBankMTL::ReleaseAllTextures()
+{
+    _texture.Clear();
+    _bigSurfaceLRU.Clear();
+    _totalBigSurfaceBytes = 0;
+    _bootstrap->ClearTexturePool();
+    _totalPooledBytes = 0;
+}
+
 void TextBankMTL::ReserveMemory(int64_t neededBytes)
 {
     EnsureBudgetInitialized();
     if (_maxTextureMemory < 0)
         return; // budget not available yet -- nothing to enforce against
-    while (_totalBigSurfaceBytes + neededBytes > _maxTextureMemory)
+    // Phase 1 (Milestone 3): drain the GPU-surface pool first -- mirrors
+    // GL33's TextBankGL33::ReserveMemory always draining _freeTextures
+    // before touching any active/in-use texture. Destroying a pooled-but-
+    // unused surface costs nothing visually (nothing on screen references
+    // it), so it's strictly cheaper than evicting something currently
+    // displayed -- exhaust this option first.
+    while (_totalBigSurfaceBytes + _totalPooledBytes + neededBytes > _maxTextureMemory)
+    {
+        const int64_t freed = _bootstrap->TrimOldestPooledTexture();
+        if (freed <= 0)
+            break; // pool empty
+        _totalPooledBytes -= freed;
+    }
+    // Phase 2 (Milestone 2, unchanged): evict active big surfaces, oldest
+    // (least-recently-used) first. This always genuinely destroys -- never
+    // pools -- since it's forcibly taking memory from a texture that may
+    // still be on screen, not a texture voluntarily upgrading its own
+    // detail level (see TextureMTL::EnsureBigSurface's doc comment for that
+    // distinction).
+    while (_totalBigSurfaceBytes + _totalPooledBytes + neededBytes > _maxTextureMemory)
     {
         HMipCacheMTL* victim = _bigSurfaceLRU.Last();
         if (victim == nullptr)

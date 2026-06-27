@@ -12,9 +12,11 @@ class EngineMTLBootstrap;
 // Real Metal-backed texture bank. Owns the budget/LRU tracking for every
 // texture's on-demand "big" surface (see TextureMTL.hpp's class doc comment
 // for the full small/big design and why the LRU is a single list instead of
-// GL33's five) -- this is the Milestone-2 piece of the GL33-parity texture-
-// streaming port. GPU-surface pooling (GL33's `_freeTextures`) is the one
-// remaining gap, Milestone 3, stretch/lower-priority.
+// GL33's five) -- Milestone 2 of the GL33-parity texture-streaming port.
+// Also owns the GPU-surface-pool accounting bucket (_totalPooledBytes) for
+// Milestone 3 -- the pool itself lives in EngineMTLBootstrap (it owns the
+// actual MTL::Texture objects), this class just tracks how many of its
+// budgeted bytes are sitting there vs actively assigned.
 class TextBankMTL : public AbstractTextBank
 {
   public:
@@ -50,21 +52,20 @@ class TextBankMTL : public AbstractTextBank
     // rare -- textures live for the whole session normally). This is the
     // one realistic bulk-destroy path, so reset the bookkeeping here
     // explicitly instead.
-    void ReleaseAllTextures() override
-    {
-        _texture.Clear();
-        _bigSurfaceLRU.Clear();
-        _totalBigSurfaceBytes = 0;
-    }
+    // Implemented in the .cpp -- needs EngineMTLBootstrap::ClearTexturePool,
+    // and _bootstrap is only forward-declared here.
+    void ReleaseAllTextures() override;
     void FinishFrame() override;
 
     int NTextures() const override { return _texture.Size(); }
     Texture* GetTexture(int i) const override { return _texture[i]; }
 
-    // Evicts least-recently-used big surfaces (CLList::Last() first) until
-    // there's room for `neededBytes` more, or nothing's left to evict.
-    // Called by TextureMTL::EnsureBigSurface before it allocates a new/
-    // bigger big surface.
+    // Makes room for `neededBytes` more, cheapest option first: drains
+    // EngineMTLBootstrap's GPU-surface pool, then evicts least-recently-used
+    // active big surfaces (CLList::Last() first) -- stops as soon as there's
+    // room or nothing's left to reclaim either way. Called by
+    // TextureMTL::EnsureBigSurface before it allocates a genuinely new
+    // (not pool-reused) big surface.
     void ReserveMemory(int64_t neededBytes);
 
     // Bookkeeping hooks TextureMTL::EnsureBigSurface/EvictBigSurface call
@@ -73,6 +74,14 @@ class TextBankMTL : public AbstractTextBank
     // LRU-touching responsibilities stay explicit at each call site (see
     // EnsureBigSurface's doc comment).
     void AdjustTotalBigSurfaceBytes(int64_t delta) { _totalBigSurfaceBytes += delta; }
+    // Milestone 3: bytes parked in EngineMTLBootstrap's GPU-surface pool --
+    // still genuinely GPU-resident (mirrors GL33's _totalAllocated never
+    // being decremented by AddReleased/UseReleased, only by
+    // DeleteLastReleased), so this counts toward the same budget ceiling as
+    // _totalBigSurfaceBytes, just in a separate bucket -- see
+    // TextureMTL::EnsureBigSurface's doc comment for which bucket a given
+    // release moves bytes into.
+    void AdjustTotalPooledBytes(int64_t delta) { _totalPooledBytes += delta; }
     void TouchLRU(TextureMTL* texture) { texture->CacheUse(_bigSurfaceLRU); }
 
   private:
@@ -92,6 +101,7 @@ class TextBankMTL : public AbstractTextBank
     // TextureMTL-owning member, not just LLinkArray<TextureMTL> _texture.
     CLList<HMipCacheMTL> _bigSurfaceLRU;
     int64_t _totalBigSurfaceBytes = 0;
+    int64_t _totalPooledBytes = 0; // Milestone 3 -- see AdjustTotalPooledBytes's doc comment
     int64_t _maxTextureMemory = -1; // -1 = not yet initialized, see EnsureBudgetInitialized
 
     LLinkArray<TextureMTL> _texture;

@@ -119,13 +119,19 @@ class TextureMTL : public Texture
     bool IsGpuValid() const override { return GpuHandle() != 0; }
 
     // Called from TextBankMTL::UseMipmap right after NoteMipmapUse computes
-    // the screen-space-driven `level`. Three outcomes:
+    // the screen-space-driven `level`. Outcomes:
     //  - level falls within what the small surface already covers, or the
     //    current big surface already covers it: no-op, returns false.
-    //  - otherwise: reserves budget (bank.ReserveMemory, may evict other
-    //    textures' big surfaces), destroys any existing too-coarse big
-    //    surface, creates a new one spanning [level, _smallCutoffLevel),
-    //    updates the bank's byte total and LRU position, returns true.
+    //  - otherwise: any existing too-coarse big surface is *pooled*, not
+    //    destroyed (Milestone 3 -- a voluntary self-upgrade, not budget
+    //    pressure; see EngineMTLBootstrap::ReleaseTextureToPool's doc
+    //    comment), then the pool is checked for an exact-size match
+    //    (possibly the surface just pooled, or one some other texture
+    //    pooled earlier) before paying for a real allocation. On a pool
+    //    miss, reserves budget (bank.ReserveMemory, may evict other
+    //    textures' big surfaces for real) and creates a new surface
+    //    spanning [level, _smallCutoffLevel). Either way, updates the
+    //    bank's byte totals and LRU position, returns true.
     // See TextureMTL.hpp's class doc comment for the overall design.
     bool EnsureBigSurface(EngineMTLBootstrap& bootstrap, TextBankMTL& bank, int level);
 
@@ -189,6 +195,10 @@ class TextureMTL : public Texture
 
     int LevelWidth(int level) const;
     int LevelHeight(int level) const;
+    // Shared by EvictBigSurface and EnsureBigSurface's voluntary-release-to-
+    // pool step -- both end up removing this texture's LRU handle, just via
+    // different GPU-disposal actions (destroy vs pool) around it.
+    void UnlinkCache();
 
     int _w = 0, _h = 0;
     // EngineMTLBootstrap texture handles; 0 = none/failed. Small is set once

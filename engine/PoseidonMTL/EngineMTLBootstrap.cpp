@@ -486,6 +486,25 @@ struct EngineMTLBootstrap::Impl
     MTL::Texture* fallbackWhite = nullptr;
     std::vector<MTL::Texture*> textures; // handle = index + 1; 0 reserved for "none"
 
+    // GPU-surface pool (Milestone 3) -- see EngineMTLBootstrap.hpp's
+    // ReleaseTextureToPool/TryReuseFromPool/TrimOldestPooledTexture doc
+    // comments. FIFO: index 0 is always the oldest, matching GL33's
+    // _freeTextures[0] always being TrimOldestPooledTexture's target.
+    struct PooledTexture
+    {
+        int width = 0;
+        int height = 0;
+        int mipCount = 0;
+        int64_t bytes = 0;
+        MTL::Texture* tex = nullptr;
+        int64_t releasedFrame = 0; // see TryReuseFromPool's doc comment
+    };
+    std::vector<PooledTexture> freeTextures;
+    // Incremented once per BeginFrame call -- see TryReuseFromPool's doc
+    // comment for why pooled surfaces need a frame-age gate, not just
+    // ReleaseTextureToPool's content match, before reuse.
+    int64_t frameCounter = 0;
+
     // 3D hardware T&L mesh pipelines (separate from the 2D one above -- the
     // vertex layout differs, pos/norm/uv vs. the 2D path's screen-space
     // pos/uv/color). Two variants sharing vsMesh, split by fragment shader +
@@ -1074,6 +1093,8 @@ bool EngineMTLBootstrap::BeginFrame(float r, float g, float b, float a, bool cle
     if (_impl->layer == nullptr || _impl->commandQueue == nullptr)
         return false;
 
+    _impl->frameCounter++;
+
     EnsurePipeline();
     EnsureFallbackResources();
     if (_impl->pipelineState == nullptr)
@@ -1523,6 +1544,27 @@ int EngineMTLBootstrap::CreateTexture(int width, int height, const uint8_t* rgba
     return static_cast<int>(_impl->textures.size());
 }
 
+namespace
+{
+// Shared by CreateTextureMipped and TryReuseFromPool (Milestone 3) -- one
+// replaceRegion call per level into an already-allocated texture.
+void UploadMipLevels(MTL::Texture* tex, const EngineMTLBootstrap::MipLevel* levels, int levelCount)
+{
+    for (int i = 0; i < levelCount; i++)
+    {
+        // A missing/invalid level invalidates every coarser level after it
+        // too (DecodePAABufferAllMips already stops at the first decode
+        // failure) -- stop uploading rather than feed replaceRegion garbage.
+        if (levels[i].rgba == nullptr || levels[i].width <= 0 || levels[i].height <= 0)
+            break;
+        MTL::Region levelRegion = MTL::Region::Make2D(0, 0, static_cast<NS::UInteger>(levels[i].width),
+                                                       static_cast<NS::UInteger>(levels[i].height));
+        tex->replaceRegion(levelRegion, static_cast<NS::UInteger>(i), levels[i].rgba,
+                           static_cast<NS::UInteger>(levels[i].width) * 4);
+    }
+}
+} // namespace
+
 int EngineMTLBootstrap::CreateTextureMipped(const MipLevel* levels, int levelCount)
 {
     if (_impl->device == nullptr || levels == nullptr || levelCount <= 0 || levels[0].width <= 0 ||
@@ -1541,18 +1583,7 @@ int EngineMTLBootstrap::CreateTextureMipped(const MipLevel* levels, int levelCou
     if (tex == nullptr)
         return 0;
 
-    for (int i = 0; i < levelCount; i++)
-    {
-        // A missing/invalid level invalidates every coarser level after it
-        // too (DecodePAABufferAllMips already stops at the first decode
-        // failure) -- stop uploading rather than feed replaceRegion garbage.
-        if (levels[i].rgba == nullptr || levels[i].width <= 0 || levels[i].height <= 0)
-            break;
-        MTL::Region levelRegion = MTL::Region::Make2D(0, 0, static_cast<NS::UInteger>(levels[i].width),
-                                                       static_cast<NS::UInteger>(levels[i].height));
-        tex->replaceRegion(levelRegion, static_cast<NS::UInteger>(i), levels[i].rgba,
-                           static_cast<NS::UInteger>(levels[i].width) * 4);
-    }
+    UploadMipLevels(tex, levels, levelCount);
 
     _impl->textures.push_back(tex);
     return static_cast<int>(_impl->textures.size());
@@ -1587,6 +1618,82 @@ uint64_t EngineMTLBootstrap::RecommendedMaxWorkingSetSize() const
     return _impl->device != nullptr ? _impl->device->recommendedMaxWorkingSetSize() : 0;
 }
 
+void EngineMTLBootstrap::ReleaseTextureToPool(int handle, int64_t bytes)
+{
+    if (handle <= 0 || static_cast<size_t>(handle) > _impl->textures.size())
+        return;
+    MTL::Texture*& slot = _impl->textures[handle - 1];
+    if (slot == nullptr)
+        return;
+    Impl::PooledTexture entry;
+    entry.width = static_cast<int>(slot->width());
+    entry.height = static_cast<int>(slot->height());
+    entry.mipCount = static_cast<int>(slot->mipmapLevelCount());
+    entry.bytes = bytes;
+    entry.tex = slot; // ownership moves to the pool -- no release() here
+    entry.releasedFrame = _impl->frameCounter;
+    _impl->freeTextures.push_back(entry);
+    slot = nullptr;
+}
+
+int EngineMTLBootstrap::TryReuseFromPool(const MipLevel* levels, int levelCount)
+{
+    if (levels == nullptr || levelCount <= 0)
+        return 0;
+    // Minimum frames a pooled surface must sit before it's eligible for
+    // reuse -- closes a real GPU race found via live testing (Milestone 3):
+    // commit() is asynchronous, so a previous frame's command buffer can
+    // still be reading this MTLTexture's *old* content on the GPU when the
+    // CPU is several frames further along. Calling replaceRegion to
+    // overwrite it with a *different* texture's pixel data while that read
+    // is still in flight produced a real, reproduced-live symptom: a shrub
+    // momentarily rendering as a completely different building's geometry/
+    // texture, then correcting itself once the stale read finished. This is
+    // a write-after-read hazard, not a use-after-free -- Metal's own
+    // command-buffer resource retention prevents the latter (TrimOldest-
+    // PooledTexture's plain release() is safe without this gate for exactly
+    // that reason: the command buffer keeps the object alive past our own
+    // release until the GPU is actually done with it, it just doesn't stop
+    // *us* from overwriting its bytes). 3 frames covers typical Metal
+    // double/triple-buffering depth with margin.
+    constexpr int64_t kMinFramesBeforeReuse = 3;
+    for (size_t i = 0; i < _impl->freeTextures.size(); i++)
+    {
+        Impl::PooledTexture& entry = _impl->freeTextures[i];
+        if (entry.width != levels[0].width || entry.height != levels[0].height || entry.mipCount != levelCount)
+            continue;
+        if (_impl->frameCounter - entry.releasedFrame < kMinFramesBeforeReuse)
+            continue; // matches in size, but too fresh to safely overwrite yet
+        MTL::Texture* tex = entry.tex;
+        _impl->freeTextures.erase(_impl->freeTextures.begin() + static_cast<ptrdiff_t>(i));
+        UploadMipLevels(tex, levels, levelCount);
+        _impl->textures.push_back(tex);
+        return static_cast<int>(_impl->textures.size());
+    }
+    return 0;
+}
+
+int64_t EngineMTLBootstrap::TrimOldestPooledTexture()
+{
+    if (_impl->freeTextures.empty())
+        return 0;
+    Impl::PooledTexture entry = _impl->freeTextures.front();
+    _impl->freeTextures.erase(_impl->freeTextures.begin());
+    if (entry.tex != nullptr)
+        entry.tex->release();
+    return entry.bytes;
+}
+
+void EngineMTLBootstrap::ClearTexturePool()
+{
+    for (Impl::PooledTexture& entry : _impl->freeTextures)
+    {
+        if (entry.tex != nullptr)
+            entry.tex->release();
+    }
+    _impl->freeTextures.clear();
+}
+
 void EngineMTLBootstrap::Shutdown()
 {
     for (MTL::Texture*& tex : _impl->textures)
@@ -1598,6 +1705,7 @@ void EngineMTLBootstrap::Shutdown()
         }
     }
     _impl->textures.clear();
+    ClearTexturePool(); // pooled surfaces aren't in _impl->textures, would otherwise leak
     for (MTL::Buffer*& buf : _impl->meshBuffers)
     {
         if (buf != nullptr)

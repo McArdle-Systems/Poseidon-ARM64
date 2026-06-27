@@ -269,6 +269,48 @@ class EngineMTLBootstrap
     // 256MB fallback constant. Returns 0 if the device isn't ready yet.
     uint64_t RecommendedMaxWorkingSetSize() const;
 
+    // GPU-surface pooling (Milestone 3) -- mirrors GL33's TextBankGL33::
+    // _freeTextures/AddReleased/UseReleased/DeleteLastReleased. Avoids a full
+    // newTexture/release round-trip when a texture's big surface shrinks
+    // then grows back to a size it already had (the common "looked away,
+    // looked back" case) by parking the released MTL::Texture object
+    // instead of destroying it, and handing it back directly to the next
+    // request of matching dimensions. See TextureMTL::EnsureBigSurface's
+    // doc comment for which release path (pool vs real destroy) applies
+    // when.
+    //
+    // Moves the handle's texture into the pool (does NOT call release() --
+    // ownership transfers to the pool) and nulls the handle's slot, same as
+    // DestroyTexture except the GPU object survives. `bytes` is the
+    // caller's already-known byte size (TextBankMTL tracks this anyway, no
+    // need to recompute it here).
+    void ReleaseTextureToPool(int handle, int64_t bytes);
+
+    // Linear search for a pooled surface with the exact (width, height,
+    // levelCount) of `levels` that has also sat in the pool at least 3
+    // frames (see the .cpp's doc comment -- closes a real GPU write-after-
+    // read race found via live testing: commit() is asynchronous, so a
+    // replaceRegion overwrite of a too-recently-released surface can race
+    // a previous frame's still-in-flight GPU read of its old content,
+    // producing genuine visible corruption, not just a theoretical risk).
+    // No pixel-format check needed, unlike GL33's equivalent (this codebase
+    // only ever uploads RGBA8Unorm). On a hit: removes it from the pool,
+    // re-uploads `levels`' pixel data into the existing MTL::Texture via the
+    // same replaceRegion loop CreateTextureMipped uses, and returns a fresh
+    // handle for it (0 bytes allocated). On a miss (no size match, or only
+    // too-fresh matches): returns 0, pool untouched.
+    int TryReuseFromPool(const MipLevel* levels, int levelCount);
+
+    // Pops and actually destroys (release()) the oldest (front) pooled
+    // entry -- mirrors GL33's DeleteLastReleased, called by TextBankMTL::
+    // ReserveMemory before it ever touches an active/in-use texture's
+    // surface, since freeing pooled memory has zero visual cost. Returns
+    // the freed entry's byte size, or 0 if the pool was already empty.
+    int64_t TrimOldestPooledTexture();
+
+    // Releases every pooled surface for real -- TextBankMTL::ReleaseAllTextures.
+    void ClearTexturePool();
+
     // Re-uploads the full extent of an existing texture in place (font-atlas
     // pages, etc.) -- width/height must match what CreateTexture() was
     // originally called with for this handle; no resize support, same

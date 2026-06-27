@@ -182,20 +182,9 @@ bool TextureMTL::EnsureBigSurface(EngineMTLBootstrap& bootstrap, TextBankMTL& ba
     if (level >= static_cast<int>(_levelPixels.size()))
         return false; // defensive -- shouldn't happen, NoteMipmapUse clamps to _nMipmaps-1
 
-    if (_bigGpuHandle != 0)
-    {
-        // Reuse EvictBigSurface rather than duplicating its cleanup here --
-        // an earlier version of this block destroyed the GPU texture and
-        // zeroed the byte/level fields directly but never unlinked _cache,
-        // leaving a zero-byte "ghost" entry permanently stuck in the bank's
-        // LRU list (EvictBigSurface's own early-out on _bigGpuHandle==0
-        // meant ReserveMemory's eviction loop could never clean it up
-        // later, since by the time it reached this ghost, the handle was
-        // already 0 -- an infinite eviction loop, confirmed live).
-        bank.AdjustTotalBigSurfaceBytes(-_bigSurfaceBytes);
-        EvictBigSurface(bootstrap);
-    }
-
+    // Built before deciding how to dispose of the old surface (if any) --
+    // Milestone 3's pool-reuse check below needs the dimensions/level count
+    // up front, not just at the final CreateTextureMipped call.
     std::vector<EngineMTLBootstrap::MipLevel> bigLevels;
     bigLevels.reserve(static_cast<size_t>(_smallCutoffLevel - level));
     int64_t neededBytes = 0;
@@ -206,7 +195,47 @@ bool TextureMTL::EnsureBigSurface(EngineMTLBootstrap& bootstrap, TextBankMTL& ba
         neededBytes += static_cast<int64_t>(info.width) * info.height * 4;
     }
 
-    // Evict other textures' big surfaces (least-recently-used first) if
+    if (_bigGpuHandle != 0)
+    {
+        // Milestone 3: pool this texture's own now-insufficient surface
+        // instead of destroying it outright -- mirrors GL33's LoadLevels
+        // calling ReleaseMemory(true) (store) on itself before trying to
+        // grow, as distinct from TextBankGL33::ReserveMemory's forced
+        // eviction of *other* textures calling ReleaseMemory(false)
+        // (destroy). This is a voluntary upgrade, not budget pressure, so
+        // the surface might be immediately reusable below (or by some
+        // other texture promoting to the same size later) -- don't pay for
+        // a destroy+recreate round-trip if so. Bytes move from the active
+        // bucket to the pooled bucket, not off the books entirely (the
+        // memory is still genuinely GPU-resident) -- see
+        // AdjustTotalPooledBytes's doc comment.
+        bank.AdjustTotalBigSurfaceBytes(-_bigSurfaceBytes);
+        bank.AdjustTotalPooledBytes(_bigSurfaceBytes);
+        bootstrap.ReleaseTextureToPool(_bigGpuHandle, _bigSurfaceBytes);
+        _bigGpuHandle = 0;
+        _bigStartLevel = INT_MAX;
+        _bigSurfaceBytes = 0;
+        UnlinkCache();
+    }
+
+    // Check the pool (which may now include the surface just released
+    // above, or one some other texture released earlier) before paying for
+    // a fresh allocation -- mirrors GL33's bank->UseReleased call in
+    // LoadLevels, right after its own ReleaseMemory(true).
+    const int reused = bootstrap.TryReuseFromPool(bigLevels.data(), static_cast<int>(bigLevels.size()));
+    if (reused != 0)
+    {
+        _bigGpuHandle = reused;
+        _bigStartLevel = level;
+        _bigSurfaceBytes = neededBytes;
+        bank.AdjustTotalPooledBytes(-neededBytes);
+        bank.AdjustTotalBigSurfaceBytes(neededBytes);
+        bank.TouchLRU(this);
+        return true;
+    }
+
+    // Pool miss -- evict other textures' big surfaces (least-recently-used
+    // first; also drains the pool itself first, see ReserveMemory) if
     // needed to make room *before* allocating -- mirrors GL33's
     // TextBankGL33::ReserveMemory being called ahead of the actual upload
     // in TextureGL33_Loading.cpp's LoadLevels.
@@ -225,6 +254,16 @@ bool TextureMTL::EnsureBigSurface(EngineMTLBootstrap& bootstrap, TextBankMTL& ba
     return true;
 }
 
+void TextureMTL::UnlinkCache()
+{
+    if (_cache != nullptr)
+    {
+        _cache->Delete(); // unlink from whatever list it's in
+        delete _cache;
+        _cache = nullptr;
+    }
+}
+
 void TextureMTL::EvictBigSurface(EngineMTLBootstrap& bootstrap)
 {
     if (_bigGpuHandle == 0)
@@ -233,12 +272,7 @@ void TextureMTL::EvictBigSurface(EngineMTLBootstrap& bootstrap)
     _bigGpuHandle = 0;
     _bigStartLevel = INT_MAX;
     _bigSurfaceBytes = 0;
-    if (_cache != nullptr)
-    {
-        _cache->Delete(); // unlink from whatever list it's in
-        delete _cache;
-        _cache = nullptr;
-    }
+    UnlinkCache();
 }
 
 void TextureMTL::CacheUse(CLList<HMipCacheMTL>& list)
@@ -445,7 +479,24 @@ int TextureMTL::NoteMipmapUse(int level, int levelTop)
     if (_levelNeededThisFrame > level)
         _levelNeededThisFrame = level;
 
-    return level;
+    // BUG FIX (found via Milestone 3 testing): this used to `return level`
+    // directly -- the raw, per-call screen-space-derived request -- instead
+    // of the hysteresis-smoothed value the _levelNeededThisFrame/LastFrame
+    // bookkeeping above exists to produce. GL33's LevelNeeded() returns
+    // min(thisFrame, lastFrame) specifically so a texture sitting right at
+    // a level-selection threshold (where per-frame floating-point jitter in
+    // the screen-space size calculation, DrawPoly.cpp, can tip the raw
+    // request between two adjacent levels frame to frame) doesn't thrash:
+    // the *finer* of the last two frames' requirements wins and sticks
+    // until both frames agree on something coarser. Returning the raw
+    // `level` instead meant EnsureBigSurface saw a genuinely different
+    // value every single frame for any borderline texture, destroying and
+    // recreating (Milestones 1/2) or pooling-then-immediately-reusing
+    // (Milestone 3) every frame -- cosmetically wasteful before, but
+    // Milestone 3's reuse made it a real correctness bug (see
+    // EngineMTLBootstrap::TryReuseFromPool's doc comment for the GPU-race
+    // half of that story).
+    return std::min(_levelNeededThisFrame, _levelNeededLastFrame);
 }
 
 void TextureMTL::FinishFrameUseTracking()
