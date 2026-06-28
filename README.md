@@ -19,6 +19,12 @@
 > Interactive trademark are claimed or implied — see the Additional Terms in
 > [`LICENSE`](LICENSE). Upstream: <https://github.com/BohemiaInteractive/CWR>.
 
+---
+
+<img width="1512" height="949" alt="image" src="https://github.com/user-attachments/assets/7d0ec033-0655-4f69-ae57-279274e33b72" />
+
+---
+
 # Arma: Cold War Assault - Remastered
 
 This repository holds the engine and game source code (codename *Poseidon*) behind *Arma: Cold War Assault* — the game first released in 2001 as *Operation Flashpoint: Cold War Crisis*. That release launched Bohemia Interactive and began the technology lineage that later grew into Real Virtuality, Arma, and Enfusion. The code has been modernized to C++20, built with CMake and Clang, with cross-platform support for Windows x64 and Linux x64.
