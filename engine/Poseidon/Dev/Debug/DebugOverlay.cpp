@@ -21,9 +21,15 @@
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
-#include <imgui_impl_opengl3.h>
 #include <SDL3/SDL.h>
+// This overlay is only ever wired up from the GL33 engine (see the GL33
+// engine's calls into DebugOverlay::Init/NewFrame/Render), which isn't
+// built for iOS (no desktop OpenGL there) -- skip the GL-backend headers
+// and the few call sites below that need them.
+#ifndef POSEIDON_TARGET_IOS
+#include <imgui_impl_opengl3.h>
 #include <glad/gl.h>
+#endif
 
 #include <Poseidon/Dev/Debug/DebugOverlay.hpp>
 #include <Poseidon/Dev/Debug/DebugCheats.hpp>
@@ -1565,6 +1571,17 @@ void DrawMainWindow()
 }
 } // namespace
 
+#ifdef POSEIDON_TARGET_IOS
+void Init(SDL_Window*, void*)
+{
+    // Never called on iOS -- only the GL33 engine wires this overlay up,
+    // and GL33 isn't built for this platform. Left unimplemented (not
+    // even creating an ImGui context) rather than faked, so a future
+    // caller fails loudly instead of silently no-oping.
+}
+
+void Shutdown() {}
+#else
 void Init(SDL_Window* window, void* glContext)
 {
     if (s_initialized)
@@ -1602,6 +1619,7 @@ void Shutdown()
     ImGui::DestroyContext();
     s_initialized = false;
 }
+#endif
 
 void ProcessEvent(const SDL_Event& event)
 {
@@ -1639,7 +1657,9 @@ void NewFrame()
     // after the game render), so we draw our own cursor as part of ImGui's
     // drawlist to stay on top.  When hidden, fall back to the engine cursor.
     ImGui::GetIO().MouseDrawCursor = s_visible;
+#ifndef POSEIDON_TARGET_IOS
     ImGui_ImplOpenGL3_NewFrame();
+#endif
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
     if (s_visible)
@@ -1651,11 +1671,13 @@ void Render()
     if (!s_initialized)
         return;
     ImGui::Render();
+#ifndef POSEIDON_TARGET_IOS
     // Make sure we draw to the default framebuffer in case the engine left
     // an FBO bound — happens with post-FX in GL33.  Other state (blend,
     // scissor, vao, depth) is saved/restored inside RenderDrawData.
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+#endif
 
     // Drain deferred actions queued by UI click handlers.  See the
     // s_pendingActions comment for the why — running cheats here

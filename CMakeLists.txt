@@ -11,6 +11,7 @@ project(CWR
 # only renderer there.
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(POSEIDON_TARGET_IOS TRUE)
+    add_compile_definitions(POSEIDON_TARGET_IOS)
 else()
     set(POSEIDON_TARGET_IOS FALSE)
 endif()

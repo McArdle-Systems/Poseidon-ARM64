@@ -105,5 +105,17 @@ set_target_properties(PoseidonGame PROPERTIES
     OUTPUT_NAME "PoseidonGame"
 )
 
+if(POSEIDON_TARGET_IOS)
+    # iOS executables are always app bundles -- give it a real bundle ID
+    # and name so it's installable (CMake leaves these blank by default).
+    set_target_properties(PoseidonGame PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.mcardle-systems.cwr.poseidongame"
+        MACOSX_BUNDLE_BUNDLE_NAME "PoseidonGame"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+    )
+endif()
+
 include(${CMAKE_SOURCE_DIR}/cmake/DistCopy.cmake)
 dist_copy(PoseidonGame)
