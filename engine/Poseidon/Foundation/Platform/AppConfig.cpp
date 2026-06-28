@@ -99,6 +99,8 @@ std::vector<std::string> NormalizeLegacyArguments(int argc, char** argv)
             arg = "--mod";
         else if (arg.rfind("-mod=", 0) == 0)
             arg = "--mod=" + arg.substr(5);
+        else if (arg == "-benchmark")
+            arg = "--benchmark";
         args.emplace_back(std::move(arg));
     }
     return args;
@@ -314,10 +316,18 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
         bool showMenuScene = true;
         displayGroup->add_flag("--menu-scene,!--no-menu-scene", showMenuScene, "Show 3D background scene in menu");
 
+#ifdef __APPLE__
+        showOption(displayGroup
+                       ->add_option("--render", _renderBackend,
+                                    "Graphics backend: dummy, gl33, mtl, auto (default: gl33)")
+                       ->check(CLI::IsMember({"dummy", "gl33", "mtl", "auto"})),
+                   CliHelpVisibility::Full);
+#else
         showOption(
             displayGroup->add_option("--render", _renderBackend, "Graphics backend: dummy, gl33, auto (default: gl33)")
                 ->check(CLI::IsMember({"dummy", "gl33", "auto"})),
             CliHelpVisibility::Full);
+#endif
 
         showOption(displayGroup->add_flag("--tl,--hw-tl", _enableHWTL,
                                           "Enable hardware transform & lighting (T&L, default on)"),
@@ -452,8 +462,8 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
                          "Working directory (game data directory with DTA/, Worlds/, etc.)")
             ->check(CLI::ExistingDirectory);
 
-        auto* legacyGroup = app.add_option_group("Legacy Compatibility",
-                                                 "Accepted OFP/CWA-style aliases: -nosplash, -mod, -nomap, -oldpaths");
+        auto* legacyGroup = app.add_option_group(
+            "Legacy Compatibility", "Accepted OFP/CWA-style aliases: -nosplash, -mod, -nomap, -oldpaths, -benchmark");
 
         legacyGroup->add_flag("--oldpaths", _oldPaths,
                               "Use game-folder paths for profiles, config, Mods, Missions, and MPMissions "
@@ -546,7 +556,8 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
 
         auto* debugGroup = app.add_option_group("Debug & Testing", "Development and testing options");
 
-        showOption(debugGroup->add_flag("--benchmark", _benchmark, "Benchmark mode"), CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--benchmark", _benchmark, "Benchmark mode (legacy alias: -benchmark)"),
+                   CliHelpVisibility::Dev);
 
         if (!BuildInfo::ReleaseBuild)
         {

@@ -889,6 +889,7 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
     // perform hit sound
     float rndFreq = GRandGen.RandomValue() * 0.1 + 0.95;
     const RandomSound* hitSounds = &type->_hitGround;
+    bool directHitIsMan = false;
     if (directHit)
     {
         hitSounds = &type->_hitBuilding;
@@ -900,6 +901,7 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
             if (typeAI->IsKindOf(GWorld->Preloaded(VTypeMan)))
             {
                 hitSounds = &type->_hitMan;
+                directHitIsMan = true;
             }
             else if (typeAI->IsKindOf(GWorld->Preloaded(VTypeAllVehicles)))
             {
@@ -935,7 +937,7 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
         timeToLive *= craterTimeCoef;
         saturate(timeToLive, 10, 30);
 
-        if (directHit)
+        if (directHit && !directHitIsMan)
         {
 #if 1
             LODShapeWithShadow* shape = GLOB_SCENE->Preloaded(CraterShell);

@@ -56,9 +56,10 @@ if(WIN32)
     )
 elseif(APPLE)
     # See apps/cwr/Game/CMakeLists.txt: Apple's linker doesn't support/need
-    # --start-group/--end-group.
+    # --start-group/--end-group, and GameApplication.cpp (compiled into this
+    # target) needs PoseidonMTL linked for RegisterMetalGraphicsBackend().
     target_link_libraries(PoseidonTetris PRIVATE
-        GameBase PoseidonGL33 Poseidon PoseidonOpenAL
+        GameBase PoseidonGL33 PoseidonMTL Poseidon PoseidonOpenAL
         pthread dl
     )
 else()
