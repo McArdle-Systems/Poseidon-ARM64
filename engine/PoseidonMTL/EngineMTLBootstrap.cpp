@@ -597,6 +597,15 @@ static void SetDepthBiasForDescriptor(MTL::RenderCommandEncoder* encoder, Poseid
 
 bool EngineMTLBootstrap::Init(const char* title, int width, int height)
 {
+    // iOS/tvOS auto-show the on-screen keyboard as soon as a window exists
+    // (for physical-keyboard scancode support), even with nothing focused --
+    // this engine has no touch UI for it and no way to dismiss it, so
+    // suppress it at the source. The hint alone isn't sufficient (it only
+    // governs SDL_StartTextInput(), but the iOS backend enables text input
+    // on window creation regardless) -- explicitly stop it after creating
+    // the window too.
+    SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
+
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
     {
         LOG_ERROR(Graphics, "EngineMTLBootstrap: SDL_InitSubSystem(VIDEO) failed: {}", SDL_GetError());
@@ -610,6 +619,7 @@ bool EngineMTLBootstrap::Init(const char* title, int width, int height)
         return false;
     }
     _ownsWindow = true;
+    SDL_StopTextInput(_window);
 
     return SetupDevice();
 }

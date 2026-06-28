@@ -39,6 +39,19 @@
         "VCPKG_TARGET_TRIPLET": "arm64-ios-simulator",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/ios-arm64-clang.cmake"
       }
+    },
+    {
+      "name": "ios-arm64-device",
+      "displayName": "iOS Device arm64 Xcode (code signing/provisioning)",
+      "inherits": "base",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/ios-arm64-device",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-ios",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/ios-device-arm64-clang.cmake",
+        "CMAKE_C_COMPILER_LAUNCHER": "",
+        "CMAKE_CXX_COMPILER_LAUNCHER": ""
+      }
     }
   ]
 }

@@ -117,5 +117,42 @@ if(POSEIDON_TARGET_IOS)
     )
 endif()
 
-include(${CMAKE_SOURCE_DIR}/cmake/DistCopy.cmake)
-dist_copy(PoseidonGame)
+if(POSEIDON_TARGET_IOS)
+    # Bundle the game's data files (DTA/AddOns/fonts/etc.) straight into the
+    # .app, preserving their relative directory layout, so the app is
+    # self-contained on install -- no manual `devicectl device copy` step
+    # needed. ~420 files, ~700MB; fine for Xcode's resource-copy phase.
+    # iOS .app bundles are flat (no Contents/Resources nesting like macOS),
+    # and [NSBundle mainBundle].resourcePath / SDL_GetBasePath() return the
+    # bundle root -- so these land exactly where the runtime expects them,
+    # with no extra path segment to account for (see WinMain.cpp's iOS
+    # branch, which chdir()s there when no explicit -C is given).
+    file(GLOB_RECURSE POSEIDON_GAME_ASSET_FILES
+        RELATIVE "${CMAKE_SOURCE_DIR}/packages/Combined"
+        "${CMAKE_SOURCE_DIR}/packages/Combined/*"
+    )
+    set(POSEIDON_GAME_ASSET_ABS_PATHS "")
+    foreach(_asset_rel ${POSEIDON_GAME_ASSET_FILES})
+        set(_asset_abs "${CMAKE_SOURCE_DIR}/packages/Combined/${_asset_rel}")
+        get_filename_component(_asset_reldir "${_asset_rel}" DIRECTORY)
+        if(NOT _asset_reldir)
+            set(_asset_reldir ".")
+        endif()
+        set_source_files_properties("${_asset_abs}" PROPERTIES
+            MACOSX_PACKAGE_LOCATION "${_asset_reldir}"
+            HEADER_FILE_ONLY TRUE
+        )
+        list(APPEND POSEIDON_GAME_ASSET_ABS_PATHS "${_asset_abs}")
+    endforeach()
+    target_sources(PoseidonGame PRIVATE ${POSEIDON_GAME_ASSET_ABS_PATHS})
+    source_group("Resources" FILES ${POSEIDON_GAME_ASSET_ABS_PATHS})
+endif()
+
+if(NOT POSEIDON_TARGET_IOS)
+    # dist_copy() flat-copies the executable out of its build tree --
+    # meaningless for an iOS .app bundle (and its custom-command script
+    # doesn't resolve Xcode's per-config/platform path variables anyway,
+    # since this is the one target built with the Xcode generator).
+    include(${CMAKE_SOURCE_DIR}/cmake/DistCopy.cmake)
+    dist_copy(PoseidonGame)
+endif()
