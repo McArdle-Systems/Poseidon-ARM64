@@ -191,8 +191,9 @@ Later tuning:
 5. Add tappable F1-F12 command-bar slots.
 6. Add tappable command-menu options.
 7. Add direct tap/drag support for existing UI controls.
-8. Add contextual button visibility rules.
-9. Add layout customization: position, scale, opacity, handedness.
+8. Detect text input contexts and open a closeable on-screen keyboard.
+9. Add contextual button visibility rules.
+10. Add layout customization: position, scale, opacity, handedness.
 
 ## Test Ideas
 
