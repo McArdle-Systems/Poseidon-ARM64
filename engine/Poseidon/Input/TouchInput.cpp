@@ -219,7 +219,21 @@ bool IsDirectTouchScene()
         return true;
     if (!GWorld)
         return false;
-    return GWorld->GetControllerUiScene().kind == ControllerSceneKind::EditorDialog;
+    const ControllerSceneKind kind = GWorld->GetControllerUiScene().kind;
+    switch (kind)
+    {
+        case ControllerSceneKind::Menu:
+        case ControllerSceneKind::Modal:
+        case ControllerSceneKind::PauseMenu:
+        case ControllerSceneKind::Notebook:
+        case ControllerSceneKind::EditorDialog:
+        case ControllerSceneKind::Multiplayer:
+        case ControllerSceneKind::ModsCatalog:
+        case ControllerSceneKind::DownloadModal:
+            return true;
+        default:
+            return false;
+    }
 }
 
 float ClampSensitivity(float v)
