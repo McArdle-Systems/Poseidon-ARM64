@@ -85,7 +85,7 @@ int main(int argc, char* argv[])
     // passed an explicit one.
     const bool hasWorkDirArg = HasArg(argc, argv, "-C") || HasArg(argc, argv, "--work-dir");
     const bool hasSplashArg = HasArg(argc, argv, "--splash") || HasArg(argc, argv, "--no-splash");
-    const bool hasFpsArg = HasArg(argc, argv, "--fps") || HasArg(argc, argv, "--show-fps");
+    const bool hasFpsArg = HasArg(argc, argv, "--fps") || HasArg(argc, argv, "--show-fps") || HasArg(argc, argv, "--no-fps");
     const bool hasLogFileArg = HasArg(argc, argv, "--log-file");
 
     std::vector<char*> iosArgv(argv, argv + argc);

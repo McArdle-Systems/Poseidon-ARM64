@@ -341,7 +341,7 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
                                           "Dual monitor mode (legacy flag, no effect)"),
                    CliHelpVisibility::Full);
 
-        displayGroup->add_flag("--fps,--show-fps", _showFps, "Show FPS overlay on screen");
+        displayGroup->add_flag("--fps,--show-fps,!--no-fps", _showFps, "Show FPS overlay on screen");
 
         showOption(displayGroup->add_flag("--notex,--no-textures", _noTextures, "Disable textures (debug mode)"),
                    CliHelpVisibility::Dev);
