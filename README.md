@@ -1,19 +1,12 @@
-# CWR-arm64 — a community fork (+ experimental Metal and iOS support)
+# CWR-arm64 — a community fork with Apple Silicon, Metal, and iOS support
 
 > **This is a modified, unofficial community fork**, not the original program
-> and not affiliated with or endorsed by Bohemia Interactive. The base of this
-> fork (see the `main` branch) makes the engine build and run natively on
-> Apple Silicon (arm64 macOS) — x86 SSE/MMX intrinsics ported to NEON, a
-> couple of glibc/Linux-only API gaps closed, and the toolchain/linker pieces
-> needed for a clean macOS build — rendering via the existing cross-platform
-> GL33 backend; no renderer changes there.
->
-> **This branch (`feature/ios`) additionally adds the experimental native
-> Metal rendering backend** (`--render mtl`, `engine/PoseidonMTL/`) and brings
-> the game up on iOS simulator and physical iOS devices. On macOS, GL33 remains
-> available for comparison; on iOS, Metal is the only renderer. This is a work
-> in progress — see [`METAL_PORT_PROGRESS.md`](METAL_PORT_PROGRESS.md) for
-> current status and known issues.
+> and not affiliated with or endorsed by Bohemia Interactive. This fork makes
+> the engine build and run natively on Apple Silicon macOS and iOS, with the
+> original-style GL33 renderer still available on desktop and a native Metal
+> renderer (`--render mtl`, `engine/PoseidonMTL/`) used for Apple platforms.
+> iOS builds use Metal only. See [`METAL_PORT_PROGRESS.md`](METAL_PORT_PROGRESS.md)
+> for current renderer status and known issues.
 >
 > No rights to "ARMA", "Operation Flashpoint", or any other Bohemia
 > Interactive trademark are claimed or implied — see the Additional Terms in
@@ -27,7 +20,7 @@
 
 # Arma: Cold War Assault - Remastered
 
-This repository holds the engine and game source code (codename *Poseidon*) behind *Arma: Cold War Assault* — the game first released in 2001 as *Operation Flashpoint: Cold War Crisis*. That release launched Bohemia Interactive and began the technology lineage that later grew into Real Virtuality, Arma, and Enfusion. The code has been modernized to C++20, built with CMake and Clang, with cross-platform support for Windows x64 and Linux x64.
+This repository holds the engine and game source code (codename *Poseidon*) behind *Arma: Cold War Assault* — the game first released in 2001 as *Operation Flashpoint: Cold War Crisis*. That release launched Bohemia Interactive and began the technology lineage that later grew into Real Virtuality, Arma, and Enfusion. The code has been modernized to C++20, built with CMake and Clang, with cross-platform support for Windows x64, Linux x64, Apple Silicon macOS, and iOS.
 Bohemia Interactive is releasing it to the community that has kept this game alive for more than two decades — to study it, build on it, fix it, and create from it. Three things are worth keeping separate:
 
 **Source code (this repository)**
@@ -95,7 +88,7 @@ Point the game at that directory with `-C`/`--work-dir` rather than `cd`-ing
 into it:
 
 ```sh
-# Native Metal backend (this fork's experimental renderer, Apple Silicon only)
+# Native Metal backend on macOS
 build/macos-arm64-clang-rwdi/apps/cwr/Game/PoseidonGame -C packages/Remaster --render mtl --window
 
 # GL33 baseline (cross-platform default renderer, for comparison)
@@ -148,8 +141,8 @@ default only for iOS builds, and feeds the existing input/controller UI paths.
 
 Current behavior:
 
-- Left virtual stick drives movement in gameplay and cursor movement in menus,
-  options, pause screens, and other non-gameplay views.
+- Left virtual stick drives movement in gameplay and cursor movement in views
+  that still use cursor-style navigation.
 - Vehicle forward/back is bridged from the left stick so touch up/down behaves
   like keyboard throttle/brake in driver contexts.
 - Right-side drag controls aim/look in gameplay.
@@ -157,6 +150,8 @@ Current behavior:
   click action.
 - Touch buttons currently cover Fire, Action, Reload, Optics/Zoom, Map, and
   Pause/Escape.
+- Menu-like screens, pause/options views, editor dialogs, and modal dialogs
+  support direct tap/drag on existing UI controls.
 - Map controls support one-finger primary interaction for taps, selection, and
   drag boxes; two-finger drag pans the map; pinch zooms the map.
 - The Action button commits on clean tap release only. Holding the Action button
