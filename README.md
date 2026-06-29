@@ -21,7 +21,7 @@
 
 ---
 
-<img width="1512" height="949" alt="image" src="https://github.com/user-attachments/assets/7d0ec033-0655-4f69-ae57-279274e33b72" />
+<img width="2868" height="1320" alt="CWR running on iOS" src=".github/images/CWR%20iOS.png" />
 
 ---
 
