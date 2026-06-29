@@ -51,5 +51,6 @@ TouchInputDebugState TouchInput_GetDebugState();
 
 void TouchInput_TestSetGameplaySceneOverride(bool enabled, bool isGameplayScene);
 void TouchInput_TestSetMapSceneOverride(bool enabled, bool isMapScene);
+void TouchInput_TestSetDirectTouchSceneOverride(bool enabled, bool isDirectTouchScene);
 
 } // namespace Poseidon

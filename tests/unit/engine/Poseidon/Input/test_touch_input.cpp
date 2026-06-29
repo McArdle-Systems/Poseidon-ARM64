@@ -33,6 +33,7 @@ struct TouchFixture
         TouchInput_SetCursorSensitivity(1.0f);
         TouchInput_TestSetGameplaySceneOverride(false, false);
         TouchInput_TestSetMapSceneOverride(false, false);
+        TouchInput_TestSetDirectTouchSceneOverride(false, false);
         TouchInput_Reset();
     }
     ~TouchFixture()
@@ -40,6 +41,7 @@ struct TouchFixture
         TouchInput_Reset();
         TouchInput_TestSetGameplaySceneOverride(false, false);
         TouchInput_TestSetMapSceneOverride(false, false);
+        TouchInput_TestSetDirectTouchSceneOverride(false, false);
         TouchInput_SetAimSensitivity(1.0f);
         TouchInput_SetCursorSensitivity(1.0f);
         TouchInput_SetEnabled(false);
@@ -163,6 +165,55 @@ TEST_CASE("TouchInput: map scene two-finger gesture pans and pinches", "[input][
     TouchInput_ProcessFrame(1920, 1080);
     state = TouchInput_GetDebugState();
     CHECK_FALSE(state.mapGestureActive);
+}
+
+TEST_CASE("TouchInput: direct touch scene one finger drives primary touch", "[input][touch]")
+{
+    TouchFixture fixture;
+    TouchInput_TestSetDirectTouchSceneOverride(true, true);
+
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.50f, 0.50f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.52f, 0.52f));
+    TouchInput_ProcessFrame(1920, 1080);
+
+    TouchInputDebugState state = TouchInput_GetDebugState();
+    CHECK(state.mapPrimaryActive);
+    CHECK_FALSE(state.mapGestureActive);
+    CHECK_FALSE(state.moveActive);
+    CHECK_FALSE(state.lookActive);
+}
+
+TEST_CASE("TouchInput: direct touch scene quick tap emits primary click on release", "[input][touch]")
+{
+    TouchFixture fixture;
+    TouchInput_TestSetDirectTouchSceneOverride(true, true);
+    GInput.mouse.FlushAndReset();
+
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.50f, 0.50f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_UP, 1, 0.50f, 0.50f));
+    GInput.mouse.Update(GInput.cursor, 0, false,
+                        Poseidon::Foundation::UITime((int)Poseidon::Foundation::GlobalTickCount()), nullptr);
+
+    CHECK(GInput.mouse.buttonsToDo[0]);
+    CHECK_FALSE(GInput.mouse.buttons[0] > 0.0f);
+}
+
+TEST_CASE("TouchInput: direct touch scene does not treat two fingers as map gesture", "[input][touch]")
+{
+    TouchFixture fixture;
+    TouchInput_TestSetDirectTouchSceneOverride(true, true);
+
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.30f, 0.40f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 2, 0.50f, 0.40f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.32f, 0.42f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 2, 0.56f, 0.42f));
+    TouchInput_ProcessFrame(1920, 1080);
+
+    TouchInputDebugState state = TouchInput_GetDebugState();
+    CHECK_FALSE(state.mapPrimaryActive);
+    CHECK_FALSE(state.mapGestureActive);
+    CHECK_FALSE(state.moveActive);
+    CHECK_FALSE(state.lookActive);
 }
 
 TEST_CASE("TouchInput: action button hold-drag emits action menu scroll steps", "[input][touch]")

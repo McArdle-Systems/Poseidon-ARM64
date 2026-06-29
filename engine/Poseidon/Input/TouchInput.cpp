@@ -124,6 +124,8 @@ float sCursorSensitivity = 1.0f;
 
 bool sMapSceneOverrideEnabled = false;
 bool sMapSceneOverride = false;
+bool sDirectTouchSceneOverrideEnabled = false;
+bool sDirectTouchSceneOverride = false;
 bool sGameplaySceneOverrideEnabled = false;
 bool sGameplaySceneOverride = false;
 
@@ -207,6 +209,17 @@ bool IsMapScene()
         return false;
     const ControllerSceneKind kind = GWorld->GetControllerUiScene().kind;
     return kind == ControllerSceneKind::Map || kind == ControllerSceneKind::EditorMap;
+}
+
+bool IsDirectTouchScene()
+{
+    if (sDirectTouchSceneOverrideEnabled)
+        return sDirectTouchSceneOverride;
+    if (IsMapScene())
+        return true;
+    if (!GWorld)
+        return false;
+    return GWorld->GetControllerUiScene().kind == ControllerSceneKind::EditorDialog;
 }
 
 float ClampSensitivity(float v)
@@ -331,7 +344,7 @@ void ClassifyFinger(Finger& finger)
         finger.role = FingerRole::Button;
         return;
     }
-    if (IsMapScene())
+    if (IsDirectTouchScene())
     {
         finger.role = FingerRole::None;
         return;
@@ -369,6 +382,23 @@ void EndMapPrimary()
     sMapPrimaryFingerId = 0;
 }
 
+void ReleaseDirectTouchFinger(const Finger& finger)
+{
+    if (finger.role != FingerRole::None || !IsDirectTouchScene())
+        return;
+
+    BufferCursorToTouch(finger.x, finger.y);
+    if (sMapPrimaryActive && sMapPrimaryFingerId == finger.id)
+    {
+        EndMapPrimary();
+    }
+    else if (finger.maxTravel <= kTapMaxTravel)
+    {
+        EmitPrimaryClick();
+    }
+    GInput.mouse.cursorLastActive = Glob.uiTime;
+}
+
 void ProcessMapPrimary(const Finger& finger)
 {
     if (sMapGestureActive)
@@ -390,7 +420,8 @@ void ProcessMapGesture()
 {
     const Finger* a = nullptr;
     const Finger* b = nullptr;
-    const int count = IsMapScene() ? CollectMapGestureFingers(&a, &b) : 0;
+    const bool mapScene = IsMapScene();
+    const int count = IsDirectTouchScene() ? CollectMapGestureFingers(&a, &b) : 0;
     if (count < 2 || !a || !b)
     {
         EndMapGesture();
@@ -402,6 +433,11 @@ void ProcessMapGesture()
     }
 
     EndMapPrimary();
+    if (!mapScene)
+    {
+        EndMapGesture();
+        return;
+    }
 
     const float ax = TouchToUiX(a->x);
     const float ay = TouchToUiY(a->y);
@@ -671,6 +707,7 @@ void TouchInput_HandleFingerEvent(const SDL_TouchFingerEvent& event)
             sActionScrollFingerId == finger->id)
             ResetActionScroll();
         EmitFingerButtonEdge(*finger, false);
+        ReleaseDirectTouchFinger(*finger);
         if (finger->role == FingerRole::Look && finger->maxTravel <= kTapMaxTravel && IsGameplayScene())
             EmitPrimaryClick();
         *finger = {};
@@ -891,6 +928,12 @@ void TouchInput_TestSetMapSceneOverride(bool enabled, bool isMapScene)
 {
     sMapSceneOverrideEnabled = enabled;
     sMapSceneOverride = isMapScene;
+}
+
+void TouchInput_TestSetDirectTouchSceneOverride(bool enabled, bool isDirectTouchScene)
+{
+    sDirectTouchSceneOverrideEnabled = enabled;
+    sDirectTouchSceneOverride = isDirectTouchScene;
 }
 
 void TouchInput_TestSetGameplaySceneOverride(bool enabled, bool isGameplayScene)
