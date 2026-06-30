@@ -26,6 +26,9 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
+    concurrency:
+      group: ${{ contains(matrix.os, 'macOS') && 'cwr-arm64-self-hosted-macos' || format('cwr-arm64-{0}-{1}', github.run_id, matrix.name) }}
+      cancel-in-progress: false
 
     strategy:
       fail-fast: false
@@ -111,6 +114,7 @@ jobs:
             libwayland-dev \
             libopenal-dev \
             wayland-protocols \
+            ccache \
             unzip
 
       - name: Verify macOS dependencies
@@ -143,17 +147,11 @@ jobs:
       - name: Configure self-hosted compiler cache
         if: runner.environment == 'self-hosted' && runner.os != 'Windows'
         run: |
-          mkdir -p "$HOME/.cache/ccache/${{ matrix.preset }}"
-          echo "CCACHE_DIR=$HOME/.cache/ccache/${{ matrix.preset }}" >> "$GITHUB_ENV"
-
-      - name: Setup compiler cache
-        uses: hendrikmuhs/ccache-action@v1.2.23
-        with:
-          variant: ccache
-          key: ${{ runner.os }}-${{ matrix.preset }}-pch
-          restore: ${{ runner.environment != 'self-hosted' }}
-          save: ${{ runner.environment != 'self-hosted' }}
-          max-size: 1G
+          export CCACHE_DIR="$HOME/.cache/ccache/${{ matrix.preset }}"
+          mkdir -p "$CCACHE_DIR"
+          ccache --set-config=max_size=1G
+          ccache --zero-stats
+          echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
 
       - name: Setup CMake and Ninja
         if: runner.os != 'macOS'
@@ -178,11 +176,19 @@ jobs:
         run: |
           cmake --version
           ninja --version
-          ccache --version
           clang-cl --version
           Get-Command link.exe
 
+      - name: Configure self-hosted vcpkg binary cache
+        if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$HOME/.cache/vcpkg-bincache/${{ matrix.vcpkg_triplet }}"
+          mkdir -p .vcpkg-bincache
+          rm -rf ".vcpkg-bincache/${{ matrix.vcpkg_triplet }}"
+          ln -s "$HOME/.cache/vcpkg-bincache/${{ matrix.vcpkg_triplet }}" ".vcpkg-bincache/${{ matrix.vcpkg_triplet }}"
+
       - name: Restore vcpkg binary cache
+        if: runner.environment != 'self-hosted'
         uses: actions/cache@v4
         with:
           path: .vcpkg-bincache/${{ matrix.vcpkg_triplet }}
@@ -206,12 +212,16 @@ jobs:
           vcpkgJsonGlob: 'vcpkg.json'
 
       - name: Configure
-        if: matrix.xcode != true
+        if: matrix.xcode != true && runner.environment == 'self-hosted'
         run: >
           cmake
           --preset ${{ matrix.preset }}
           -DCMAKE_C_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Configure
+        if: matrix.xcode != true && runner.environment != 'self-hosted'
+        run: cmake --preset ${{ matrix.preset }}
 
       - name: Configure Xcode
         if: matrix.xcode == true
@@ -258,6 +268,10 @@ jobs:
           } else {
             ctest --test-dir '${{ matrix.build_dir }}' --output-on-failure -E "$env:CTEST_EXCLUDE"
           }
+
+      - name: Show compiler cache stats
+        if: always() && runner.environment == 'self-hosted' && runner.os != 'Windows'
+        run: ccache --show-stats
 
       - name: Smoke test macOS renderers
         if: runner.os == 'macOS' && matrix.skip_tests != true
