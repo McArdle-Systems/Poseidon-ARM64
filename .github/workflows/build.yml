@@ -140,13 +140,20 @@ jobs:
           arch: 'x64'
           directory: 'C:\Program Files\LLVM'
 
+      - name: Configure self-hosted compiler cache
+        if: runner.environment == 'self-hosted' && runner.os != 'Windows'
+        run: |
+          mkdir -p "$HOME/.cache/ccache/${{ matrix.preset }}"
+          echo "CCACHE_DIR=$HOME/.cache/ccache/${{ matrix.preset }}" >> "$GITHUB_ENV"
+
       - name: Setup compiler cache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           variant: ccache
           key: ${{ runner.os }}-${{ matrix.preset }}-pch
-          # Keep cache upload/compression from dominating short incremental jobs.
-          max-size: 300M
+          restore: ${{ runner.environment != 'self-hosted' }}
+          save: ${{ runner.environment != 'self-hosted' }}
+          max-size: 1G
 
       - name: Setup CMake and Ninja
         if: runner.os != 'macOS'
