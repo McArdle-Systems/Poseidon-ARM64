@@ -62,6 +62,15 @@ list(APPEND ALL_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Input/InputDispatch.cpp
 )
 
+if(POSEIDON_TARGET_IOS)
+    list(FILTER ALL_SOURCES EXCLUDE REGEX "UI/Controls/IosKeyboardAccessory\.cpp$")
+    list(APPEND ALL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/UI/Controls/IosKeyboardAccessory.mm)
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/UI/Controls/IosKeyboardAccessory.mm
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+    )
+endif()
+
 # Global exclusions
 list(FILTER ALL_SOURCES EXCLUDE REGEX "Memory/MemTable\.cpp$")
 list(FILTER ALL_SOURCES EXCLUDE REGEX ".*soundDummy\.cpp$")
