@@ -14,6 +14,11 @@ extern Input GInput;
 
 namespace
 {
+constexpr float kFireButtonX = 0.042f;
+constexpr float kFireButtonY = 0.907f;
+constexpr float kActionButtonX = 0.098f;
+constexpr float kActionButtonY = 0.814f;
+
 SDL_TouchFingerEvent Finger(SDL_EventType type, SDL_FingerID id, float x, float y)
 {
     SDL_TouchFingerEvent event = {};
@@ -76,7 +81,7 @@ TEST_CASE("TouchInput: right-side drag owns cursor/look and does not steal butto
     TouchFixture fixture;
 
     TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.70f, 0.50f));
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 2, 0.96f, 0.91f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 2, kFireButtonX, kFireButtonY));
     TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.73f, 0.47f));
     TouchInput_ProcessFrame(1920, 1080);
 
@@ -96,7 +101,7 @@ TEST_CASE("TouchInput: simultaneous move look and button state coexist", "[input
     TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.18f, 0.66f));
     TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 2, 0.72f, 0.50f));
     TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 2, 0.75f, 0.50f));
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 3, 0.90f, 0.81f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 3, kActionButtonX, kActionButtonY));
     TouchInput_ProcessFrame(1920, 1080);
 
     TouchInputDebugState state = TouchInput_GetDebugState();
@@ -222,8 +227,8 @@ TEST_CASE("TouchInput: action button hold-drag emits action menu scroll steps", 
     TouchInput_TestSetGameplaySceneOverride(true, true);
     GInput.keyboard.ForgetKeys();
 
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.90f, 0.81f));
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.90f, 0.75f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, kActionButtonX, kActionButtonY));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, kActionButtonX, kActionButtonY - 0.06f));
     TouchInput_ProcessFrame(1920, 1080);
 
     TouchInputDebugState state = TouchInput_GetDebugState();
@@ -231,12 +236,12 @@ TEST_CASE("TouchInput: action button hold-drag emits action menu scroll steps", 
     CHECK(state.actionScrollActive);
     CHECK(state.actionScrollSteps == 1);
 
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.90f, 0.88f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, kActionButtonX, kActionButtonY + 0.07f));
     TouchInput_ProcessFrame(1920, 1080);
     state = TouchInput_GetDebugState();
     CHECK(state.actionScrollSteps == -1);
 
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_UP, 1, 0.90f, 0.88f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_UP, 1, kActionButtonX, kActionButtonY + 0.07f));
     state = TouchInput_GetDebugState();
     CHECK_FALSE(state.actionScrollActive);
 
@@ -250,8 +255,8 @@ TEST_CASE("TouchInput: quick action tap emits action key on release", "[input][t
     TouchInput_TestSetGameplaySceneOverride(true, true);
     GInput.keyboard.ForgetKeys();
 
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.90f, 0.81f));
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_UP, 1, 0.90f, 0.81f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, kActionButtonX, kActionButtonY));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_UP, 1, kActionButtonX, kActionButtonY));
 
     GInput.keyboard.Update(Poseidon::Foundation::GlobalTickCount(), 16, true);
     CHECK(GInput.keyboard.keysToDo[SDL_SCANCODE_RETURN]);
@@ -263,9 +268,9 @@ TEST_CASE("TouchInput: action hold with drag does not trigger action on release"
     TouchInput_TestSetGameplaySceneOverride(true, true);
     GInput.keyboard.ForgetKeys();
 
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.90f, 0.81f));
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.90f, 0.84f));
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_UP, 1, 0.90f, 0.84f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, kActionButtonX, kActionButtonY));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, kActionButtonX, kActionButtonY + 0.03f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_UP, 1, kActionButtonX, kActionButtonY + 0.03f));
 
     GInput.keyboard.Update(Poseidon::Foundation::GlobalTickCount(), 16, true);
     CHECK_FALSE(GInput.keyboard.keysToDo[SDL_SCANCODE_RETURN]);
