@@ -1,8 +1,6 @@
 #include <Poseidon/Input/TouchInput.hpp>
 
 #include <Poseidon/Core/Global.hpp>
-#include <Poseidon/Core/Config/UserConfig.hpp>
-#include <Poseidon/Core/Profile/DifficultyTypes.hpp>
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
@@ -236,7 +234,7 @@ bool IsGameplayScene()
 
 bool IsPersonViewButtonAvailable()
 {
-    return IsGameplayScene() && USER_CONFIG.IsEnabled(DT3rdPersonView);
+    return IsGameplayScene();
 }
 
 bool IsMapScene()
