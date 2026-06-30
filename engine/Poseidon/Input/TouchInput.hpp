@@ -14,6 +14,7 @@ enum class TouchButton
     Reload,
     Optics,
     Equipment,
+    PersonView,
     Pause,
     Count,
 };

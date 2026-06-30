@@ -1,6 +1,8 @@
 #include <Poseidon/Input/TouchInput.hpp>
 
 #include <Poseidon/Core/Global.hpp>
+#include <Poseidon/Core/Config/UserConfig.hpp>
+#include <Poseidon/Core/Profile/DifficultyTypes.hpp>
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
@@ -232,6 +234,11 @@ bool IsGameplayScene()
     return GWorld && GWorld->GetControllerUiScene().kind == ControllerSceneKind::Gameplay;
 }
 
+bool IsPersonViewButtonAvailable()
+{
+    return IsGameplayScene() && USER_CONFIG.IsEnabled(DT3rdPersonView);
+}
+
 bool IsMapScene()
 {
     if (sMapSceneOverrideEnabled)
@@ -293,11 +300,13 @@ std::array<ButtonZone, (int)TouchButton::Count> BuildButtonZones(int width, int 
     const float opticsY = fireY - layout.buttonGap * 2.68f;
     const float mapY = fireY - layout.buttonGap * 3.58f;
     const float radius = layout.buttonRadius / (float)height;
+    const float oppositeX = (float)width - layout.edgeMargin;
     return {{{TouchButton::Fire, NormX(columnX, width), NormY(fireY, height), radius * 1.18f},
              {TouchButton::Action, NormX(innerX, width), NormY(actionY, height), radius},
              {TouchButton::Reload, NormX(columnX, width), NormY(reloadY, height), radius},
              {TouchButton::Optics, NormX(innerX, width), NormY(opticsY, height), radius},
              {TouchButton::Equipment, NormX(columnX, width), NormY(mapY, height), radius},
+             {TouchButton::PersonView, NormX(oppositeX, width), NormY(layout.topMargin, height), radius * 0.72f},
              {TouchButton::Pause, NormX(layout.edgeMargin, width), NormY(layout.topMargin, height), radius * 0.72f}}};
 }
 
@@ -390,6 +399,8 @@ TouchButton HitButton(float x, float y)
 {
     for (const ButtonZone& zone : BuildButtonZones(sViewportW, sViewportH))
     {
+        if (zone.button == TouchButton::PersonView && !IsPersonViewButtonAvailable())
+            continue;
         const float dx = (x - zone.x) * (float)std::max(1, sViewportW);
         const float dy = (y - zone.y) * (float)std::max(1, sViewportH);
         const float r = zone.r * (float)std::max(1, sViewportH);
@@ -742,6 +753,12 @@ void EmitButtonEdge(TouchButton button, bool down)
             break;
         case TouchButton::Equipment:
             break;
+        case TouchButton::PersonView:
+            if (down)
+                SDLInput_BufferKeyEvent(SDL_SCANCODE_KP_ENTER, true, Foundation::GlobalTickCount());
+            else
+                SDLInput_BufferKeyEvent(SDL_SCANCODE_KP_ENTER, false, Foundation::GlobalTickCount());
+            break;
         case TouchButton::Pause:
             if (down)
                 SDLInput_BufferControllerUiAction(IsGameplayScene() ? ControllerUiAction::Pause : ControllerUiAction::Cancel,
@@ -891,6 +908,13 @@ void DrawTouchIcon(Engine* engine, const MipInfo& white, TouchButton button, flo
             DrawLineNorm(engine, cx - sx * 0.16f, cy - sy * 0.31f, cx - sx * 0.16f, cy + sy * 0.29f, color);
             DrawLineNorm(engine, cx + sx * 0.16f, cy - sy * 0.29f, cx + sx * 0.16f, cy + sy * 0.31f, color);
             DrawCircleApprox(engine, white, cx, cy, r * 0.16f, color);
+            break;
+        case TouchButton::PersonView:
+            DrawCircleApprox(engine, white, cx, cy, r * 0.36f, color);
+            DrawLineNorm(engine, cx - sx * 0.46f, cy + sy * 0.10f, cx, cy - sy * 0.38f, color);
+            DrawLineNorm(engine, cx, cy - sy * 0.38f, cx + sx * 0.46f, cy + sy * 0.10f, color);
+            DrawLineNorm(engine, cx - sx * 0.46f, cy + sy * 0.10f, cx - sx * 0.26f, cy + sy * 0.36f, color);
+            DrawLineNorm(engine, cx + sx * 0.46f, cy + sy * 0.10f, cx + sx * 0.26f, cy + sy * 0.36f, color);
             break;
         case TouchButton::Pause:
             DrawRectNorm(engine, white, cx - sx * 0.16f, cy, sx * 0.12f, sy * 0.62f, color);
@@ -1138,6 +1162,8 @@ void TouchInput_DrawOverlay(Engine* engine)
     }
     for (const ButtonZone& zone : BuildButtonZones(w, h))
     {
+        if (zone.button == TouchButton::PersonView && !IsPersonViewButtonAvailable())
+            continue;
         DrawCircleApprox(engine, white, zone.x, zone.y, zone.r,
                          sButtonDown[(int)zone.button] ? pressed : base);
         DrawTouchIcon(engine, white, zone.button, zone.x, zone.y, zone.r * 0.82f,
