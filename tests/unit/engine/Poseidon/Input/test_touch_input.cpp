@@ -18,10 +18,10 @@ namespace
 {
 constexpr float kFireButtonX = 0.042f;
 constexpr float kFireButtonY = 0.907f;
-constexpr float kActionButtonX = 0.098f;
-constexpr float kActionButtonY = 0.814f;
-constexpr float kEquipmentButtonX = 0.042f;
-constexpr float kEquipmentButtonY = 0.531f;
+constexpr float kActionButtonX = 0.042f;
+constexpr float kActionButtonY = 0.531f;
+constexpr float kEquipmentButtonX = 0.958f;
+constexpr float kEquipmentButtonY = 0.173f;
 
 SDL_TouchFingerEvent Finger(SDL_EventType type, SDL_FingerID id, float x, float y)
 {
@@ -33,10 +33,32 @@ SDL_TouchFingerEvent Finger(SDL_EventType type, SDL_FingerID id, float x, float 
     return event;
 }
 
+void ClearBufferedInput()
+{
+    GInput.mouse.DiscardBuffered();
+    GInput.mouse.FlushAndReset();
+    for (int i = 0; i < N_MOUSE_BUTTONS; ++i)
+    {
+        GInput.mouse.buttons[i] = 0.0f;
+        GInput.mouse.buttonsToDo[i] = false;
+        GInput.mouse.buttonsDoubleToDo[i] = false;
+        GInput.mouse.buttonsDoubleActive[i] = false;
+    }
+    GInput.mouse.left = false;
+    GInput.mouse.right = false;
+    GInput.mouse.middle = false;
+    GInput.mouse.leftToDo = false;
+    GInput.mouse.rightToDo = false;
+    GInput.mouse.middleToDo = false;
+    GInput.mouse.doubleClickToDo = false;
+    GInput.keyboard.ForgetKeys();
+}
+
 struct TouchFixture
 {
     TouchFixture()
     {
+        ClearBufferedInput();
         TouchInput_SetEnabled(true);
         TouchInput_SetAimSensitivity(1.0f);
         TouchInput_SetCursorSensitivity(1.0f);
@@ -50,6 +72,7 @@ struct TouchFixture
     ~TouchFixture()
     {
         TouchInput_Reset();
+        ClearBufferedInput();
         TouchInput_TestSetGameplaySceneOverride(false, false);
         TouchInput_TestSetMapSceneOverride(false, false);
         TouchInput_TestSetEditorMapSceneOverride(false, false);
@@ -249,7 +272,7 @@ TEST_CASE("TouchInput: safe area preserves staggered action column", "[input][to
     TouchInput_TestSetGameplaySceneOverride(true, true);
     TouchInput_TestSetSafeArea(0.12f, 0.0f, 1.0f, 1.0f);
 
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.15f, kActionButtonY));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.12f, kActionButtonY));
     TouchInput_ProcessFrame(1920, 1080);
     CHECK_FALSE(TouchInput_GetDebugState().buttons[(int)TouchButton::Action]);
 
@@ -257,7 +280,7 @@ TEST_CASE("TouchInput: safe area preserves staggered action column", "[input][to
     TouchInput_TestSetGameplaySceneOverride(true, true);
     TouchInput_TestSetSafeArea(0.12f, 0.0f, 1.0f, 1.0f);
 
-    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 2, 0.21f, kActionButtonY));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 2, 0.16f, kActionButtonY));
     TouchInput_ProcessFrame(1920, 1080);
     CHECK(TouchInput_GetDebugState().buttons[(int)TouchButton::Action]);
 }
