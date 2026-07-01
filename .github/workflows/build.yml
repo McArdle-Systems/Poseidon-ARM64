@@ -170,10 +170,10 @@ jobs:
             /sbin/ldconfig -p | grep -E 'libopenal\.so(\.1)?'
           fi
 
-      - name: Clear stale macOS precompiled headers after Xcode updates
+      - name: Clear macOS precompiled headers
         if: runner.environment == 'self-hosted' && runner.os == 'macOS'
         run: |
-          current_clang="$(xcrun clang --version | head -n 1)"
+          xcrun clang --version | head -n 1
           build_dirs=(
             "${{ matrix.build_dir }}"
             "build/macos-arm64-clang-rwdi"
@@ -181,15 +181,8 @@ jobs:
           )
 
           for build_dir in "${build_dirs[@]}"; do
-            stamp_file="$build_dir/.xcode-clang-version"
-            if [ -f "$stamp_file" ] && [ "$(cat "$stamp_file")" = "$current_clang" ]; then
-              continue
-            fi
-
-            echo "Xcode/clang changed; clearing stale CMake precompiled headers in $build_dir"
+            echo "Clearing CMake precompiled headers in $build_dir"
             find "$build_dir" -name '*.pch' -delete 2>/dev/null || true
-            mkdir -p "$(dirname "$stamp_file")"
-            printf '%s\n' "$current_clang" > "$stamp_file"
           done
 
       - name: Show Windows toolchain versions
