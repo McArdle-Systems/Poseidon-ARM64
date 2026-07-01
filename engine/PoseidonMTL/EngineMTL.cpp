@@ -493,6 +493,8 @@ void EngineMTL::PrepareTriangle(const MipInfo& mip, int specFlags)
     _currentTriSampler = d.sampler;
     _currentTriSurfaceMode = d.surface;
     _currentTriShader = d.shader;
+    if (_legacyMeshUiOverlay && d.blend == render::BlendMode::AlphaBlend && d.fog == render::FogMode::AlphaFog)
+        _currentTriDepthMode = render::DepthMode::ReadOnly;
 
     if (d.shader == render::ShaderFamily::Detail || d.shader == render::ShaderFamily::Grass)
     {
@@ -917,7 +919,9 @@ void EngineMTL::DrawLine(int beg, int end)
     const PackedColor colors[4] = {v0.color, v0.color, v1.color, v1.color};
 
     const Rect2DAbs fullScreen(0, 0, static_cast<float>(_w), static_cast<float>(_h));
-    DrawFan2D(xy, z, rhw, uv, nullptr, colors, 4, 0, 0, fullScreen);
+    const render::SamplerMode sampler = {render::SamplerFilter::Linear, true, true};
+    DrawFan2D(xy, z, rhw, uv, nullptr, colors, 4, 0, 0, fullScreen, render::DepthMode::ReadOnly,
+              render::BlendMode::AlphaBlend, sampler);
 }
 
 bool EngineMTL::SwitchRes(int w, int h, int bpp)

@@ -109,8 +109,17 @@ class EngineMTL : public Engine
     void DrawLine(int beg, int end) override; // 3D line, reads from the bound TLVertexTable
 
     void PrepareMesh(const render::LegacySpec& /*spec*/) override {}
-    void BeginMesh(TLVertexTable& mesh, const render::LegacySpec& /*spec*/) override { _mesh = &mesh; }
-    void EndMesh(TLVertexTable& /*mesh*/) override { _mesh = nullptr; }
+    void BeginMesh(TLVertexTable& mesh, const render::LegacySpec& spec) override
+    {
+        _mesh = &mesh;
+        _legacyMeshUiOverlay =
+            render::IsOnSurfaceRouting(spec.routing) && render::Has(spec.material, render::Material::DisableSun);
+    }
+    void EndMesh(TLVertexTable& /*mesh*/) override
+    {
+        _mesh = nullptr;
+        _legacyMeshUiOverlay = false;
+    }
 
     // --- Hardware T&L mesh path (terrain/vehicles/characters) ---
     bool GetTL() const override { return true; }
@@ -211,6 +220,7 @@ class EngineMTL : public Engine
     // 2 grass. Set by PrepareTriangle from the original spec bits and carried
     // per-vertex so DrawTriangles2D can share one shader for UI and legacy 3D.
     float _currentTriDetailMode = 0.0f;
+    bool _legacyMeshUiOverlay = false;
 
     // Hardware T&L mesh path state. `_tlCurrentTexture` is set by
     // PrepareTriangleTL, the per-section hook Shape::Draw calls (via
