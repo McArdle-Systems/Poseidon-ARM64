@@ -2,6 +2,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
+#include <Poseidon/Core/Global.hpp>
+#include <Poseidon/Input/InputSubsystem.hpp>
 #include <Poseidon/Input/KeyInput.hpp>
 #include <Poseidon/Input/TouchInput.hpp>
 
@@ -49,6 +51,7 @@ struct TouchFixture
         TouchInput_TestSetDirectTouchSceneOverride(false, false);
         TouchInput_SetAimSensitivity(1.0f);
         TouchInput_SetCursorSensitivity(1.0f);
+        Glob.uiTime = Poseidon::Foundation::UITime(0);
         TouchInput_SetEnabled(false);
     }
 };
@@ -76,6 +79,22 @@ TEST_CASE("TouchInput: left lower finger owns movement stick", "[input][touch]")
     CHECK(state.moveY == Catch::Approx(0.0f));
 }
 
+TEST_CASE("TouchInput: mostly horizontal gameplay move snaps to pure strafe", "[input][touch]")
+{
+    TouchFixture fixture;
+    TouchInput_TestSetGameplaySceneOverride(true, true);
+
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.20f, 0.80f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.29f, 0.805f));
+    TouchInput_ProcessFrame(1920, 1080);
+
+    float syntheticX = 0.0f;
+    float syntheticY = 0.0f;
+    REQUIRE(InputSubsystem::Instance().GetSyntheticLeftStick(syntheticX, syntheticY));
+    CHECK(syntheticX > 0.7f);
+    CHECK(syntheticY == Catch::Approx(0.0f));
+}
+
 TEST_CASE("TouchInput: right-side drag owns cursor/look and does not steal button touches", "[input][touch]")
 {
     TouchFixture fixture;
@@ -91,6 +110,43 @@ TEST_CASE("TouchInput: right-side drag owns cursor/look and does not steal butto
     CHECK(state.buttons[(int)TouchButton::Fire]);
     CHECK(state.lookDx == Catch::Approx(57.6f).margin(0.1f));
     CHECK(state.lookDy == Catch::Approx(-32.4f).margin(0.1f));
+}
+
+TEST_CASE("TouchInput: stationary held look finger does not repeat movement", "[input][touch]")
+{
+    TouchFixture fixture;
+
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.70f, 0.50f));
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.73f, 0.50f));
+    TouchInput_ProcessFrame(1920, 1080);
+
+    TouchInputDebugState state = TouchInput_GetDebugState();
+    REQUIRE(state.lookActive);
+    CHECK(state.lookDx == Catch::Approx(57.6f).margin(0.1f));
+
+    TouchInput_ProcessFrame(1920, 1080);
+    state = TouchInput_GetDebugState();
+    CHECK(state.lookActive);
+    CHECK(state.lookDx == Catch::Approx(0.0f));
+    CHECK(state.lookDy == Catch::Approx(0.0f));
+}
+
+TEST_CASE("TouchInput: long gameplay look hold does not fire on release", "[input][touch]")
+{
+    TouchFixture fixture;
+    TouchInput_TestSetGameplaySceneOverride(true, true);
+    GInput.mouse.FlushAndReset();
+
+    Glob.uiTime = Poseidon::Foundation::UITime(1000);
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.70f, 0.50f));
+    TouchInput_ProcessFrame(1920, 1080);
+
+    Glob.uiTime = Poseidon::Foundation::UITime(1600);
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_UP, 1, 0.70f, 0.50f));
+    GInput.mouse.Update(GInput.cursor, 0, false, Glob.uiTime, nullptr);
+
+    CHECK_FALSE(GInput.mouse.buttonsToDo[0]);
+    CHECK_FALSE(GInput.mouse.buttons[0] > 0.0f);
 }
 
 TEST_CASE("TouchInput: simultaneous move look and button state coexist", "[input][touch]")
@@ -110,6 +166,40 @@ TEST_CASE("TouchInput: simultaneous move look and button state coexist", "[input
     CHECK(state.moveY < -0.9f);
     CHECK(state.lookDx > 8.0f);
     CHECK(state.buttons[(int)TouchButton::Action]);
+}
+
+TEST_CASE("TouchInput: calm gameplay look activates aim focus after dwell", "[input][touch]")
+{
+    TouchFixture fixture;
+    TouchInput_TestSetGameplaySceneOverride(true, true);
+
+    Glob.uiTime = Poseidon::Foundation::UITime(1000);
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.70f, 0.50f));
+    TouchInput_ProcessFrame(1920, 1080);
+    CHECK_FALSE(TouchInput_GetDebugState().aimFocusActive);
+
+    Glob.uiTime = Poseidon::Foundation::UITime(1250);
+    TouchInput_ProcessFrame(1920, 1080);
+    CHECK(TouchInput_GetDebugState().aimFocusActive);
+}
+
+TEST_CASE("TouchInput: fast gameplay look releases aim focus", "[input][touch]")
+{
+    TouchFixture fixture;
+    TouchInput_TestSetGameplaySceneOverride(true, true);
+
+    Glob.uiTime = Poseidon::Foundation::UITime(1000);
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_DOWN, 1, 0.70f, 0.50f));
+    TouchInput_ProcessFrame(1920, 1080);
+
+    Glob.uiTime = Poseidon::Foundation::UITime(1250);
+    TouchInput_ProcessFrame(1920, 1080);
+    REQUIRE(TouchInput_GetDebugState().aimFocusActive);
+
+    Glob.uiTime = Poseidon::Foundation::UITime(1260);
+    TouchInput_HandleFingerEvent(Finger(SDL_EVENT_FINGER_MOTION, 1, 0.74f, 0.50f));
+    TouchInput_ProcessFrame(1920, 1080);
+    CHECK_FALSE(TouchInput_GetDebugState().aimFocusActive);
 }
 
 TEST_CASE("TouchInput: finger coordinates are clamped before classification", "[input][touch]")

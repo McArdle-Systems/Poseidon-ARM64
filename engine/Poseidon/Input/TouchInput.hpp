@@ -24,6 +24,7 @@ struct TouchInputDebugState
     bool enabled = false;
     bool moveActive = false;
     bool lookActive = false;
+    bool aimFocusActive = false;
     bool mapPrimaryActive = false;
     bool mapGestureActive = false;
     bool actionScrollActive = false;
@@ -43,6 +44,7 @@ void TouchInput_ProcessFrame(int viewportWidth, int viewportHeight);
 void TouchInput_DrawOverlay(Engine* engine);
 void TouchInput_SetEnabled(bool enabled);
 bool TouchInput_IsEnabled();
+bool TouchInput_IsAimFocusActive();
 void TouchInput_SetAimSensitivity(float sensitivity);
 float TouchInput_GetAimSensitivity();
 void TouchInput_SetCursorSensitivity(float sensitivity);

@@ -43,9 +43,14 @@ constexpr float kBaseLookScaleX = 720.0f;
 constexpr float kBaseLookScaleY = 520.0f;
 constexpr float kCursorStickScaleX = 22.0f;
 constexpr float kCursorStickScaleY = 22.0f;
+constexpr float kAimFocusDwellSeconds = 0.22f;
+constexpr float kAimFocusCalmPixels = 4.0f;
+constexpr float kAimFocusReleasePixels = 10.0f;
+constexpr float kTouchStrafeSnapRatio = 0.27f;
 constexpr float kMinSensitivity = 0.25f;
 constexpr float kMaxSensitivity = 3.0f;
 constexpr float kTapMaxTravel = 0.018f;
+constexpr float kTapMaxSeconds = 0.30f;
 constexpr float kMapPanMouseScaleX = 200.0f / 1.5f;
 constexpr float kMapPanMouseScaleY = 150.0f / 1.5f;
 constexpr float kMapPinchZoomScale = 5.0f;
@@ -94,6 +99,7 @@ struct Finger
     float lastX = 0.0f;
     float lastY = 0.0f;
     float maxTravel = 0.0f;
+    Foundation::UITime startTime;
 };
 
 struct ButtonZone
@@ -134,6 +140,9 @@ float sMoveThumbX = 0.18f;
 float sMoveThumbY = 0.74f;
 float sLookX = 0.0f;
 float sLookY = 0.0f;
+bool sAimFocusActive = false;
+bool sAimFocusCalm = false;
+Foundation::UITime sAimFocusCalmSince;
 bool sMapGestureActive = false;
 bool sMapPrimaryActive = false;
 SDL_FingerID sMapPrimaryFingerId = 0;
@@ -512,6 +521,13 @@ void EndMapGesture()
     sMapPanX = 0.0f;
     sMapPanY = 0.0f;
     sMapZoom = 0.0f;
+}
+
+void EndAimFocus()
+{
+    sAimFocusActive = false;
+    sAimFocusCalm = false;
+    sAimFocusCalmSince = Glob.uiTime;
 }
 
 void EndMapPrimary()
@@ -1002,7 +1018,8 @@ void TouchInput_HandleFingerEvent(const SDL_TouchFingerEvent& event)
             sEquipmentHover = HitEquipmentItem(finger->x, finger->y);
         EmitFingerButtonEdge(*finger, false);
         ReleaseDirectTouchFinger(*finger);
-        if (finger->role == FingerRole::Look && finger->maxTravel <= kTapMaxTravel && IsGameplayScene())
+        const bool quickTap = Glob.uiTime - finger->startTime <= kTapMaxSeconds;
+        if (finger->role == FingerRole::Look && finger->maxTravel <= kTapMaxTravel && quickTap && IsGameplayScene())
             EmitPrimaryClick();
         *finger = {};
         return;
@@ -1026,6 +1043,7 @@ void TouchInput_HandleFingerEvent(const SDL_TouchFingerEvent& event)
         finger->startY = y;
         finger->lastX = x;
         finger->lastY = y;
+        finger->startTime = Glob.uiTime;
         finger->maxTravel = 0.0f;
         ClassifyFinger(*finger);
         EmitFingerButtonEdge(*finger, true);
@@ -1047,6 +1065,7 @@ void TouchInput_ProcessFrame(int viewportWidth, int viewportHeight)
 
     if (!sEnabled)
     {
+        EndAimFocus();
         ResetActionScroll();
         EndMapPrimary();
         EndMapGesture();
@@ -1057,7 +1076,7 @@ void TouchInput_ProcessFrame(int viewportWidth, int viewportHeight)
 
     bool moveActive = false;
     bool lookActive = false;
-    for (const Finger& finger : sFingers)
+    for (Finger& finger : sFingers)
     {
         if (!finger.active)
             continue;
@@ -1081,8 +1100,29 @@ void TouchInput_ProcessFrame(int viewportWidth, int viewportHeight)
             const float sensitivity = gameplay ? sAimSensitivity : sCursorSensitivity;
             const float scaleX = gameplay ? kBaseLookScaleX : (float)std::max(1, sViewportW);
             const float scaleY = gameplay ? kBaseLookScaleY : (float)std::max(1, sViewportH);
-            sLookDx += (finger.x - finger.lastX) * scaleX * sensitivity;
-            sLookDy += (finger.y - finger.lastY) * scaleY * sensitivity;
+            const float dx = (finger.x - finger.lastX) * scaleX * sensitivity;
+            const float dy = (finger.y - finger.lastY) * scaleY * sensitivity;
+            sLookDx += dx;
+            sLookDy += dy;
+            if (gameplay)
+            {
+                const float lookPixels = Length(dx, dy);
+                if (lookPixels <= kAimFocusCalmPixels)
+                {
+                    if (!sAimFocusCalm)
+                    {
+                        sAimFocusCalm = true;
+                        sAimFocusCalmSince = Glob.uiTime;
+                    }
+                }
+                else
+                {
+                    sAimFocusCalm = false;
+                    sAimFocusCalmSince = Glob.uiTime;
+                }
+                if (sAimFocusActive && lookPixels >= kAimFocusReleasePixels)
+                    EndAimFocus();
+            }
             sLookX = finger.x;
             sLookY = finger.y;
             lookActive = true;
@@ -1095,9 +1135,15 @@ void TouchInput_ProcessFrame(int viewportWidth, int viewportHeight)
 
     if (IsGameplayScene())
     {
-        InputSubsystem::Instance().SetSyntheticLeftStick(sMoveX, sMoveY);
+        float syntheticMoveY = sMoveY;
+        if (std::fabs(sMoveX) > 0.35f && std::fabs(sMoveY) < std::fabs(sMoveX) * kTouchStrafeSnapRatio)
+            syntheticMoveY = 0.0f;
+        InputSubsystem::Instance().SetSyntheticLeftStick(sMoveX, syntheticMoveY);
         if (moveActive)
+        {
             GInput.gamepad.moveLastActive = Glob.uiTime;
+            GInput.mouse.turnLastActive = Glob.uiTime;
+        }
     }
     else
     {
@@ -1115,12 +1161,30 @@ void TouchInput_ProcessFrame(int viewportWidth, int viewportHeight)
         SDLInput_BufferMouseMotion(sLookDx, sLookDy);
         GInput.mouse.cursorLastActive = Glob.uiTime;
         GInput.mouse.turnLastActive = Glob.uiTime;
+        if (!IsGameplayScene())
+            EndAimFocus();
     }
+    else
+    {
+        EndAimFocus();
+    }
+
+    if (lookActive && IsGameplayScene() && sAimFocusCalm && !sAimFocusActive &&
+        Glob.uiTime - sAimFocusCalmSince >= kAimFocusDwellSeconds)
+        sAimFocusActive = true;
 
     for (int i = 0; i < (int)TouchButton::Count; i++)
     {
         if (sButtonDown[i])
             EmitButtonHeld((TouchButton)i);
+    }
+
+    for (Finger& finger : sFingers)
+    {
+        if (!finger.active)
+            continue;
+        finger.lastX = finger.x;
+        finger.lastY = finger.y;
     }
 }
 
@@ -1184,6 +1248,11 @@ bool TouchInput_IsEnabled()
     return sEnabled;
 }
 
+bool TouchInput_IsAimFocusActive()
+{
+    return sAimFocusActive;
+}
+
 void TouchInput_SetAimSensitivity(float sensitivity)
 {
     sAimSensitivity = ClampSensitivity(sensitivity);
@@ -1210,6 +1279,7 @@ void TouchInput_Reset()
         EmitFingerButtonEdge(finger, false);
     ResetActionTap();
     ResetActionScroll();
+    EndAimFocus();
     SetLatchedEquipment(EquipmentItem::None);
     ResetEquipmentRadial();
     EndMapPrimary();
@@ -1227,6 +1297,7 @@ TouchInputDebugState TouchInput_GetDebugState()
     state.enabled = sEnabled;
     state.moveActive = RoleActive(FingerRole::Move);
     state.lookActive = RoleActive(FingerRole::Look);
+    state.aimFocusActive = sAimFocusActive;
     state.mapPrimaryActive = sMapPrimaryActive;
     state.mapGestureActive = sMapGestureActive;
     state.actionScrollActive = sActionScrollActive;
