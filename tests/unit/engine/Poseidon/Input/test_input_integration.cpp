@@ -557,6 +557,30 @@ TEST_CASE("InputSubsystem synthetic left stick does not double count infantry le
     sub.SetSyntheticLeftStick(0.0f, 0.0f);
 }
 
+TEST_CASE("InputSubsystem synthetic left stick X drives infantry lateral movement actions", "[input][integration]")
+{
+    auto& sub = InputSubsystem::Instance();
+    sub.LoadDefaultProfiles();
+    sub.SetSyntheticLeftStick(0.0f, 0.0f);
+    GInput.gameFocusLost = 0;
+
+    sub.SetSyntheticLeftStick(-0.7f, 0.0f);
+    CHECK(sub.GetAction(InputContext::Infantry, UAMoveLeft) == Catch::Approx(0.7f));
+    CHECK(sub.GetAction(InputContext::Infantry, UAMoveRight) == Catch::Approx(0.0f));
+    CHECK(sub.GetAction(InputContext::Infantry, UATurnLeft) == Catch::Approx(0.7f));
+    CHECK(sub.GetAction(InputContext::Infantry, UATurnRight) == Catch::Approx(0.0f));
+
+    sub.SetSyntheticLeftStick(0.6f, 0.0f);
+    CHECK(sub.GetAction(InputContext::Infantry, UAMoveLeft) == Catch::Approx(0.0f));
+    CHECK(sub.GetAction(InputContext::Infantry, UAMoveRight) == Catch::Approx(0.6f));
+    CHECK(sub.GetAction(InputContext::Infantry, UATurnLeft) == Catch::Approx(0.0f));
+    CHECK(sub.GetAction(InputContext::Infantry, UATurnRight) == Catch::Approx(0.6f));
+    CHECK(sub.GetAction(InputContext::Gunner, UATurnLeft) == Catch::Approx(0.0f));
+    CHECK(sub.GetAction(InputContext::Gunner, UATurnRight) == Catch::Approx(0.6f));
+
+    sub.SetSyntheticLeftStick(0.0f, 0.0f);
+}
+
 TEST_CASE("InputSubsystem SaveKeys does not crash", "[input][integration]")
 {
     auto& sub = InputSubsystem::Instance();

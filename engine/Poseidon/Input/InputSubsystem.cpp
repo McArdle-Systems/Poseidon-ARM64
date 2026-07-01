@@ -636,6 +636,14 @@ float InputSubsystem::GetAction(InputContext ctx, UserAction action, bool checkF
         else
             value += std::max(0.0f, syntheticLeftStickY_);
     }
+    if ((action == UATurnLeft || action == UATurnRight) && syntheticLeftStickX_ != 0.0f &&
+        !ActionHasGamepadAxisBinding(profile, action, 0))
+    {
+        if (action == UATurnLeft)
+            value += std::max(0.0f, -syntheticLeftStickX_);
+        else
+            value += std::max(0.0f, syntheticLeftStickX_);
+    }
 
     return value;
 }
