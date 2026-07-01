@@ -975,13 +975,13 @@ bool EngineMTL::SetWindowMode(WindowMode mode)
 
 RString EngineMTL::GetDebugName() const
 {
-    return "Metal";
+    std::string name = _bootstrap.GetRendererName();
+    return name.empty() ? "Metal" : RString("Metal — ") + name.c_str();
 }
 
 RString EngineMTL::GetRendererName() const
 {
-    std::string name = _bootstrap.GetRendererName();
-    return name.empty() ? "Metal" : name.c_str();
+    return "Metal";
 }
 
 void EngineMTL::ListResolutions(FindArray<ResolutionInfo>& ret)
