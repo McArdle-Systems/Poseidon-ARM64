@@ -1752,6 +1752,8 @@ void InGameUI::DrawGroupUnit(AIUnit* u, float xScreen, float yScreen, float alph
 
 void InGameUI::DrawGroupInfo(EntityAI* vehicle)
 {
+    _groupBarTapZoneCount = 0;
+
     AIUnit* unit = GWorld->FocusOn();
     PoseidonAssert(unit);
     AISubgroup* subgroup = unit->GetSubgroup();
@@ -1985,6 +1987,40 @@ void InGameUI::DrawGroupInfo(EntityAI* vehicle)
             }
         }
 
+        if (_groupBarTapZoneCount < MAX_UNITS_PER_GROUP)
+        {
+            GroupBarTapZone& zone = _groupBarTapZones[_groupBarTapZoneCount++];
+            zone.x = left;
+            zone.y = uiY + border;
+            zone.w = width;
+            zone.h = height;
+            zone.unitIds.Clear();
+            zone.unitIds.Add(i + 1);
+            if (info.vehicle)
+            {
+                // Fold in any other group unit sharing this vehicle whose own
+                // slot got skipped above (a commander/gunner deferring to a
+                // driver, or a gunner deferring to a commander) - they're
+                // represented by this same icon, so a tap here should select
+                // all of them, not just unit i+1.
+                for (int j = 0; j < MAX_UNITS_PER_GROUP; j++)
+                {
+                    if (j == i || !_groupInfo[j].valid || _groupInfo[j].vehicle != info.vehicle)
+                    {
+                        continue;
+                    }
+                    const UnitDescription& other = _groupInfo[j];
+                    const bool folded = (other.status == UnitDescription::commander && info.vehicle->DriverBrain()) ||
+                                        (other.status == UnitDescription::gunner &&
+                                         (info.vehicle->DriverBrain() || info.vehicle->CommanderBrain()));
+                    if (folded)
+                    {
+                        zone.unitIds.Add(j + 1);
+                    }
+                }
+            }
+        }
+
         // draw rectangle
 
         // draw picture
@@ -2187,51 +2223,53 @@ void InGameUI::DrawGroupInfo(EntityAI* vehicle)
     }
 }
 
-int InGameUI::GroupBarUnitAtTouch(float normX, float normY) const
+AutoArray<int> InGameUI::GroupBarUnitsAtTouch(float normX, float normY) const
 {
+    // DrawGroupInfo (and the _groupBarTapZones it records) only runs when
+    // InGameUIDrawCursor.cpp's own "_showGroupInfo && leader && NUnits()>1"
+    // check passes - if it doesn't run this frame, _groupBarTapZones holds
+    // whatever it last recorded while the bar *was* shown. Re-check the same
+    // condition here so a stale zone from an earlier frame can't be tapped
+    // after the bar stops being relevant (e.g. the player loses group lead).
     if (!_showGroupInfo)
     {
-        return -1;
+        return AutoArray<int>();
     }
     AIUnit* unit = GWorld->FocusOn();
     if (!unit)
     {
-        return -1;
+        return AutoArray<int>();
     }
     AISubgroup* subgroup = unit->GetSubgroup();
     if (!subgroup)
     {
-        return -1;
+        return AutoArray<int>();
     }
     AIGroup* group = subgroup->GetGroup();
     if (!group || !unit->IsGroupLeader() || group->NUnits() <= 1)
     {
-        return -1;
+        return AutoArray<int>();
     }
 
-    // Mirrors the fixed-column layout DrawGroupInfo uses before it compacts skipped
-    // (commander/gunner dedup) slots leftward, so this can be a stateless re-derivation
-    // instead of caching per-frame draw positions.
-    const float border = 0.005f;
-    const float width = (uiW - (MAX_UNITS_PER_GROUP + 1) * border) * (1.0f / MAX_UNITS_PER_GROUP);
-    const float height = width * 2.0f / 3.0f;
-
-    if (normY < uiY + border || normY > uiY + border + height)
+    // Looks up the icon layout DrawGroupInfo itself recorded while rendering
+    // (_groupBarTapZones), rather than re-deriving positions independently -
+    // that guessing approach broke as soon as a vehicle crew (driver +
+    // gunner + commander) got dedup'd onto one icon, since the "next" icon's
+    // real position depends on how many earlier slots got folded away.
+    for (int i = 0; i < _groupBarTapZoneCount; i++)
     {
-        return -1;
-    }
-
-    for (int i = 0; i < MAX_UNITS_PER_GROUP; i++)
-    {
-        if (!_groupInfo[i].valid)
+        const GroupBarTapZone& zone = _groupBarTapZones[i];
+        // Extend the hit zone upward (away from the screen's bottom edge,
+        // never downward) beyond the drawn icon - the icons are small and
+        // this is the bottom-most HUD element, both a fat-finger target and
+        // right where iOS's own edge-swipe gesture already competes for the
+        // touch.
+        const float top = zone.y - zone.h;
+        const float bottom = zone.y + zone.h;
+        if (normX >= zone.x && normX <= zone.x + zone.w && normY >= top && normY <= bottom)
         {
-            continue;
-        }
-        const float left = uiX + border + i * (width + border);
-        if (normX >= left && normX <= left + width)
-        {
-            return i + 1;
+            return zone.unitIds;
         }
     }
-    return -1;
+    return AutoArray<int>();
 }

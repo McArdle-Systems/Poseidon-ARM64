@@ -136,6 +136,18 @@ public:
 	}
 };
 
+// One visually-drawn icon in the group-info bar, captured by DrawGroupInfo
+// as it renders so touch hit-testing can look up the *actual* layout
+// instead of re-deriving a guessed one (which breaks once DrawGroupInfo's
+// own dedup logic folds a vehicle crew onto a single icon).
+struct GroupBarTapZone
+{
+	float x, y, w, h; // normalized screen rect (0..1), matches the drawn icon
+	AutoArray<int> unitIds; // 1-based group unit IDs this icon represents
+
+	GroupBarTapZone(): x(0), y(0), w(0), h(0) {}
+};
+
 struct CursorText
 {
 	RString text;
@@ -272,6 +284,8 @@ class InGameUI: public AbstractUI
 	Poseidon::Foundation::UITime _lockAimValidUntil;
 
 	UnitDescription _groupInfo[MAX_UNITS_PER_GROUP];
+	GroupBarTapZone _groupBarTapZones[MAX_UNITS_PER_GROUP];
+	int _groupBarTapZoneCount = 0;
 
 	Poseidon::Foundation::UITime _lastGroupInfoTime;
 	Poseidon::Foundation::UITime _lastUnitInfoTime;
@@ -324,7 +338,7 @@ class InGameUI: public AbstractUI
 
 	RString GetActionMenuTexts() const override;
 	RString GetCommandMenuTexts() const override;
-	int GroupBarUnitAtTouch(float normX, float normY) const override;
+	AutoArray<int> GroupBarUnitsAtTouch(float normX, float normY) const override;
 
 	void DrawHUD
 	(

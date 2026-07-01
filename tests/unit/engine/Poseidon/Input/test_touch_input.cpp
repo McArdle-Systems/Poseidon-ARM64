@@ -161,7 +161,7 @@ TEST_CASE("TouchInput: stationary held look finger does not repeat movement", "[
     CHECK(state.lookDy == Catch::Approx(0.0f));
 }
 
-// GroupBarUnitAtTouch (the commanding group-bar hit test) requires a live GWorld/AIGroup,
+// GroupBarUnitsAtTouch (the commanding group-bar hit test) requires a live GWorld/AIGroup,
 // which this Input-layer unit test binary never sets up (GWorld stays null). A tap over
 // where the group bar would be must therefore keep falling back to the pre-existing
 // Look-region quick-tap behavior instead of silently doing nothing or crashing.

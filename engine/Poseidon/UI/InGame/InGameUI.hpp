@@ -74,9 +74,13 @@ public:
 	// in-game command menu visible labels, one per line (empty when closed). For tri tests.
 	virtual RString GetCommandMenuTexts() const { return RString(); }
 
-	// touch: maps a tap at normalized screen coords (0..1) to the 1-based group unit ID
-	// whose icon currently occupies that spot in the group-info bar, or -1 if none.
-	virtual int GroupBarUnitAtTouch(float /*normX*/, float /*normY*/) const { return -1; }
+	// touch: returns the 1-based group unit IDs whose icon occupies a tap at
+	// normalized screen coords (0..1) in the group-info bar - empty if none.
+	// Usually one entry, but a vehicle crew sharing a single dedup'd icon
+	// (e.g. driver+gunner+commander) returns all of them, since tapping that
+	// icon should select the whole crew, not just whichever slot survived
+	// DrawGroupInfo's dedup.
+	virtual AutoArray<int> GroupBarUnitsAtTouch(float /*normX*/, float /*normY*/) const { return AutoArray<int>(); }
 
 	// used to handle mouse movements
 	virtual Vector3 GetCursorDirection() const = 0;

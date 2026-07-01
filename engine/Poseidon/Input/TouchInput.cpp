@@ -446,13 +446,17 @@ void EmitGroupSelectTap(const Finger& finger)
     if (!GWorld || !GWorld->GetUI())
         return;
 
-    const int unitId = GWorld->GetUI()->GroupBarUnitAtTouch(TouchToUiX(finger.x), TouchToUiY(finger.y));
-    if (unitId < 1)
-        return;
-
-    const SDL_Scancode key = (SDL_Scancode)(SDL_SCANCODE_F1 + (unitId - 1));
-    SDLInput_BufferKeyEvent(key, true, Foundation::GlobalTickCount());
-    SDLInput_BufferKeyEvent(key, false, Foundation::GlobalTickCount());
+    // A vehicle crew sharing one dedup'd icon (driver+gunner+commander)
+    // returns more than one unit ID here - synthesize a key tap per ID so
+    // the tap selects the whole crew, the same as pressing each of their
+    // individual F-keys in the same frame would.
+    const AutoArray<int> unitIds = GWorld->GetUI()->GroupBarUnitsAtTouch(TouchToUiX(finger.x), TouchToUiY(finger.y));
+    for (int i = 0; i < unitIds.Size(); i++)
+    {
+        const SDL_Scancode key = (SDL_Scancode)(SDL_SCANCODE_F1 + (unitIds[i] - 1));
+        SDLInput_BufferKeyEvent(key, true, Foundation::GlobalTickCount());
+        SDLInput_BufferKeyEvent(key, false, Foundation::GlobalTickCount());
+    }
 }
 
 std::array<ButtonZone, (int)TouchButton::Count> BuildButtonZones(int width, int height)
@@ -692,7 +696,7 @@ void ClassifyFinger(Finger& finger)
         return;
     }
     if (IsGameplayScene() && GWorld && GWorld->GetUI() &&
-        GWorld->GetUI()->GroupBarUnitAtTouch(TouchToUiX(finger.x), TouchToUiY(finger.y)) >= 0)
+        GWorld->GetUI()->GroupBarUnitsAtTouch(TouchToUiX(finger.x), TouchToUiY(finger.y)).Size() > 0)
     {
         finger.role = FingerRole::GroupSelect;
         return;
